@@ -7,9 +7,10 @@ Read `.claude/skills/ranger-start/SKILL.md` for the layout and the loop, and
 `.claude/skills/ranger-lang/SKILL.md` before writing any `.rgr`. What follows
 is the short version — the parts that cost the most when missed.
 
-## The compiler exits 0 when it fails
+## Compilers through 3.5.1 exit 0 when they fail
 
-`rgrc` prints `[FAIL]` and `Compilation FAILED` and **returns success**.
+`rgrc` prints `[FAIL]` and `Compilation FAILED`, and up to 3.5.1 **returned
+success**.
 
 ```bash
 npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
@@ -17,10 +18,11 @@ npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
 
 The `&&` is satisfied by that zero, the previous build is still on disk, and
 node runs that one: the edit looks applied and the test looks green when
-neither is true.
+neither is true. Later compilers exit non-zero, but which one is installed here
+is `npm install`'s answer, not yours.
 
-Use `scripts/rgr`, which deletes the output first, reads the log for the
-failure the exit status omits, and fails on a missing output file.
+Use `scripts/rgr`, which deletes the output first, reads the log as well as the
+exit status, and fails on a missing output file.
 
 ```bash
 scripts/rgr run   src/Main.rgr           # compile to JS and run

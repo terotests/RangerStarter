@@ -2,9 +2,10 @@
 #
 # deps.sh — fetch what ranger.json names, and FAIL when the fetch fails.
 #
-# `rgrc install` has the same habit as the compiler: it prints `[FAIL]` and
-# exits 0. In CI that means a `-frozen` check that cannot cover the lock still
-# reports a green build. So the log is read here, as it is in scripts/rgr.
+# `rgrc install` had the same habit as the compiler: through 3.5.1 it prints
+# `[FAIL]` and exits 0. In CI that means a `-frozen` check that cannot cover the
+# lock still reports a green build. Later compilers exit non-zero; the log is
+# read here either way, as it is in scripts/rgr.
 #
 #   scripts/deps.sh              fetch into the package cache, write ranger.lock
 #   scripts/deps.sh -vendor      also write vendor/ranger/<name>

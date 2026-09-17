@@ -2,8 +2,8 @@
 #
 # rgr — compile a Ranger program and run it, and FAIL when the compile fails.
 #
-# WHY THIS EXISTS. The Ranger compiler prints `[FAIL]` and `Compilation FAILED`
-# and then exits 0. Written the obvious way,
+# WHY THIS EXISTS. Ranger compilers through 3.5.1 print `[FAIL]` and
+# `Compilation FAILED` and then exit 0. Written the obvious way,
 #
 #     rgrc Main.rgr -o=Main.js && node build/Main.js
 #
@@ -11,9 +11,10 @@
 # node runs that one. The program prints what it printed before the change —
 # so the edit looks applied, the test looks green, and neither is true.
 #
-# So: the output file is deleted first, the compiler's log is read for the
-# failure it will not put in its exit status, and a missing output file is
-# itself an error.
+# Later compilers exit non-zero, and which one is installed here is whatever
+# `npm install` resolved. So, on either: the output file is deleted first, the
+# compiler's log is read as well as its exit status, and a missing output file
+# is itself an error.
 #
 #   rgr run   <src.rgr> [args…]      compile to JavaScript and run it
 #   rgr build <src.rgr> [-l=<lang>]  compile only

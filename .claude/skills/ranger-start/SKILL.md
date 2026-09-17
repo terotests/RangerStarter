@@ -34,7 +34,8 @@ npm run targets:run                    # and run the three this machine has
 
 ## Never call `rgrc` directly
 
-`rgrc` prints `[FAIL]` and `Compilation FAILED` and then **exits zero**. So:
+`rgrc` prints `[FAIL]` and `Compilation FAILED`, and up to 3.5.1 **exited
+zero**. So:
 
 ```bash
 npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
@@ -42,11 +43,13 @@ npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
 
 The `&&` is satisfied by that zero, the previous build is still on disk, and
 node runs **that**. The program prints what it printed before the edit: the
-change looks applied, the test looks green, and neither is true.
+change looks applied, the test looks green, and neither is true. A later
+compiler exits non-zero there, but which one this project installed is
+`package.json`'s business, not the caller's.
 
-`scripts/rgr` deletes the output first, reads the log for the failure the exit
-status omits, and treats a missing output file as an error. Use it. Every
-`npm` script here goes through it.
+`scripts/rgr` deletes the output first, reads the log as well as the exit
+status, and treats a missing output file as an error. Use it. Every `npm`
+script here goes through it.
 
 ## Before writing much Ranger
 
