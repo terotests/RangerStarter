@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build, test and compile every target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install the compiler
+        run: npm install
+
+      - name: Run it
+        run: npm start
+
+      - name: Test
+        run: npm test
+
+      # Generating Swift does not need Xcode, so this checks all fourteen
+      # writers on a plain Ubuntu runner. Running them is the next step, and
+      # only for the toolchains that are actually here.
+      - name: Compile to every target
+        run: npm run targets
+
+      - name: Run the test on the toolchains this runner has
+        run: |
+          scripts/rgr run src/MainTest.rgr
+          scripts/rgr run src/MainTest.rgr -l=python
+          scripts/rgr run src/MainTest.rgr -l=go
+
+      # The same source on three runtimes must print the same thing. A
+      # difference here is a portability bug, not a formatting detail.
+      - name: The targets must agree
+        run: npm run targets:run
+
+      - name: Upload the generated sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-targets
+          path: build/targets/
+          retention-days: 7

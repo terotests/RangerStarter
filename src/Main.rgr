@@ -1,0 +1,32 @@
+; SPDX-License-Identifier: MIT
+;
+; Main.rgr — the entry point named by ranger.json.
+;
+;   npm start            compile to JavaScript and run it
+;   npm run targets      compile this file to all fourteen targets
+;   scripts/rgr run src/Main.rgr -l=python
+;
+; A class, a static function marked `@(main)`, and the program. That is the
+; whole of it.
+
+Import "Greeter.rgr"
+
+class Main {
+    sfn m@(main):void () {
+        def g (new Greeter("hei"))
+        print (g.hello("maailma"))
+        print (g.shout("Ranger"))
+
+        ; A loop and an array, so the generated source in each target is worth
+        ; reading in build/targets/ after `npm run targets`.
+        def targets:[string]
+        push targets "JavaScript"
+        push targets "Python"
+        push targets "Go"
+        def i:int 0
+        while (i < (array_length targets)) {
+            print (("  -> " + (itemAt targets i)) + ", from this same file")
+            i = (i + 1)
+        }
+    }
+}

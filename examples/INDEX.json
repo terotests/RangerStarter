@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "note": "Examples by what they DO. `needs` says what has to be on disk: `starter` runs here with nothing but `npm install`; `gallery` needs scripts/add-gallery.sh, which pulls AGPL sources from the Ranger repository.",
+  "repo": "https://github.com/terotests/Ranger",
+  "examples": [
+    {
+      "id": "hello",
+      "title": "Hello, and the build loop",
+      "does": "One class, one print — and the `rgr` loop that fails loudly when the compile fails.",
+      "needs": "starter",
+      "where": "examples/hello/Hello.rgr",
+      "run": "scripts/rgr run examples/hello/Hello.rgr",
+      "teaches": ["a class with a main", "the compile-and-run loop"]
+    },
+    {
+      "id": "main",
+      "title": "Two files, a test, and fourteen targets",
+      "does": "The project this starter is: an entry point, a class it imports, a test that exits non-zero, and a matrix that compiles the lot to every target Ranger has.",
+      "needs": "starter",
+      "where": "src/",
+      "run": "npm start && npm test && npm run targets",
+      "teaches": ["Import between files", "a test CI can fail on", "one source, many targets"]
+    },
+    {
+      "id": "calc",
+      "title": "A parser and evaluator, in three languages",
+      "does": "Tokenises and evaluates arithmetic with a recursive-descent parser, then runs the SAME source as JavaScript, Python and Go.",
+      "needs": "starter",
+      "where": "examples/calc/Calc.rgr",
+      "run": "npm run example:calc",
+      "teaches": ["recursive descent", "one source, many targets", "why `to_double` needs a trim"]
+    },
+    {
+      "id": "pdf",
+      "title": "A PDF with no browser in it",
+      "does": "Lays a document out with EVG — a CSS engine written in Ranger — and prints it as a real PDF with embedded fonts and vector graphics.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh pdf_writer",
+      "skill": "evg-edit",
+      "teaches": ["EVG layout", "PDF output", "no headless browser"]
+    },
+    {
+      "id": "markdown",
+      "title": "Markdown to PDF and to PowerPoint, with diagrams",
+      "does": "A Markdown document with ```mermaid, ```plantuml, ```dot, ```d2 and ```vega-lite fences, laid out and printed. The diagrams are geometry, not pictures.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh markdown",
+      "teaches": ["document pipeline", "diagrams as vectors", "charts from a spec"]
+    },
+    {
+      "id": "flow",
+      "title": "Diagrams from text",
+      "does": "Mermaid, PlantUML, Graphviz and D2 parsed and laid out by RangerFlow — a graph engine with its own routing.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh rangerflow",
+      "teaches": ["graph layout", "four notations, one scene"]
+    },
+    {
+      "id": "charts",
+      "title": "Vega charts without Vega",
+      "does": "Vega and Vega-Lite specifications rendered by Vela, in Ranger, to the same display list EVG prints.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh vela",
+      "teaches": ["a spec-driven renderer", "charts into a document"]
+    },
+    {
+      "id": "rave",
+      "title": "An application, not a picture of one",
+      "does": "A routed, responsive, accessible app written as HTML-shaped markup and checked without a browser.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh rave",
+      "skill": "rave",
+      "teaches": ["app structure", "checking accessibility without a browser"]
+    },
+    {
+      "id": "figma",
+      "title": "A Figma file, written and read",
+      "does": "Reads a .fig (Kiwi + zstd) and writes one: frames, text, vector networks, a thumbnail.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh figma",
+      "teaches": ["binary format work", "EVG to a design tool"]
+    },
+    {
+      "id": "codegraph",
+      "title": "Reading a codebase",
+      "does": "Analyses a JavaScript or C++ project and draws its classes, dependencies and sources as a navigable graph.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh codegraph",
+      "teaches": ["parsers over real code", "a tool that reads a tree"]
+    },
+    {
+      "id": "datagrid",
+      "title": "A spreadsheet",
+      "does": "Grid, formulas and XLSX reading and writing.",
+      "needs": "gallery",
+      "add": "scripts/add-gallery.sh datagrid",
+      "teaches": ["OOXML", "a large application in Ranger"]
+    },
+    {
+      "id": "mobile",
+      "title": "The same screen on iOS and Android",
+      "does": "One Ranger source driving a Swift host and a Kotlin host — the layout, the state machine and the list are shared; only the window is native.",
+      "needs": "repo",
+      "where": "gallery/process_counter_ios, gallery/process_counter_android in the Ranger repository",
+      "run": "see each directory's README",
+      "teaches": ["one source, two platforms", "a native host around shared logic"]
+    }
+  ]
+}

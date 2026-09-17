@@ -1,0 +1,27 @@
+; SPDX-License-Identifier: MIT
+;
+; Greeter.rgr — a class in its own file, so that Main.rgr has something to
+; import. `Import` takes a path relative to the importing file.
+
+class Greeter {
+    def greeting:string "hei"
+
+    Constructor (greeting:string) {
+        this.greeting = greeting
+    }
+
+    ; `hello` is a safe name. Some method names are NOT: defining `contains`,
+    ; `trim`, `first`, `toString` (and a handful more) on your own class
+    ; compiles, and then every CALL SITE fails with "Class X does not have
+    ; method …". The list is in .claude/skills/ranger-lang/SKILL.md.
+    fn hello:string (name:string) {
+        return ((this.greeting + " ") + name)
+    }
+
+    ; One statement per line. `{ def a 1  return a }` does not parse, however
+    ; tidy it looks.
+    fn shout:string (name:string) {
+        def line:string (this.hello(name))
+        return (line + "!")
+    }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "ranger-starter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Ranger project that compiles and runs from a clean clone, on every target Ranger has.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "scripts/rgr run src/Main.rgr",
+    "build": "scripts/rgr build src/Main.rgr",
+    "check": "scripts/rgr check src/Main.rgr",
+    "test": "scripts/rgr run src/MainTest.rgr",
+    "targets": "scripts/targets.sh src/Main.rgr",
+    "targets:run": "scripts/targets.sh --run src/Main.rgr",
+    "example:calc": "scripts/rgr run examples/calc/Calc.rgr",
+    "deps": "scripts/deps.sh",
+    "deps:vendor": "scripts/deps.sh -vendor",
+    "deps:frozen": "scripts/deps.sh -frozen",
+    "gallery": "scripts/add-gallery.sh",
+    "package": "scripts/package.sh",
+    "package:npm": "scripts/package.sh npm",
+    "package:all": "scripts/package.sh all"
+  },
+  "devDependencies": {
+    "ranger-compiler": "^3.5.1"
+  }
+}
