@@ -1,0 +1,99 @@
+# Working in this project
+
+A Ranger project. One typed source language, fourteen target languages, and a
+compiler that is an npm dependency rather than a checkout.
+
+Read `.claude/skills/ranger-start/SKILL.md` for the layout and the loop, and
+`.claude/skills/ranger-lang/SKILL.md` before writing any `.rgr`. What follows
+is the short version — the parts that cost the most when missed.
+
+## The compiler exits 0 when it fails
+
+`rgrc` prints `[FAIL]` and `Compilation FAILED` and **returns success**.
+
+```bash
+npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
+```
+
+The `&&` is satisfied by that zero, the previous build is still on disk, and
+node runs that one: the edit looks applied and the test looks green when
+neither is true.
+
+Use `scripts/rgr`, which deletes the output first, reads the log for the
+failure the exit status omits, and fails on a missing output file.
+
+```bash
+scripts/rgr run   src/Main.rgr           # compile to JS and run
+scripts/rgr run   src/Main.rgr -l=python # same source, as Python
+scripts/rgr build src/Main.rgr -l=go     # compile only
+scripts/rgr check src/Main.rgr           # does it compile? nothing else
+```
+
+Every `npm` script in `package.json` goes through it.
+
+## Commands
+
+| | |
+| --- | --- |
+| `npm start` | compile `src/Main.rgr` and run it |
+| `npm test` | `src/MainTest.rgr` — exits non-zero when an expectation fails |
+| `npm run targets` | compile to all fourteen targets into `build/targets/` |
+| `npm run targets:run` | and run the three this machine has, failing if they disagree |
+| `npm run example:calc` | the bundled parser example |
+| `npm run deps` | fetch what `ranger.json` names, write `ranger.lock` |
+| `npm run package` | the manifest each target ecosystem expects, into `build/pkg/` |
+| `npm run gallery` | what can be added from the Ranger gallery, and what that costs |
+
+## Syntax rules that fail somewhere other than the mistake
+
+- **A returned call may need its own parentheses.** `return (fn1(3))`. A dotted
+  receiver is folded for you — `return this.helper()` parses — a bare local
+  lambda is not.
+- **One statement per line.** `{ x = 1  return true }` is a parse error however
+  tidy it looks.
+- **Reserved method names.** Defining `contains`, `startsWith`, `endsWith`,
+  `trim`, `first`, `last`, `remove`, `insert`, `write`, `read`, `normalize`,
+  `toString`, `has` or `sqrt` on your own class compiles, and then every CALL
+  SITE fails with "Class X does not have method …". Rename.
+- **Never start a statement with a parenthesised receiver.** Bind first:
+  `def recv:T (expr)` then `recv.method()`.
+- **Optional annotations go on the name**, not the type:
+  `fn find@(optional):Thing (path:string)`.
+- Integer division is `idiv`; `/` is real division. Elvis is prefix:
+  `(?? value fallback)`. There is no `abs` builtin.
+
+## Targets disagree — check, do not assume
+
+`to_double` accepts `"10 "` in JavaScript and Python and refuses it in Go, so
+`(to_double (trim text))` is the portable form. Numbers print as `7` in
+JavaScript and Go and `7.0` in Python, so test the value rather than the
+printed string. `npm run targets:run` is what actually checks a portability
+claim.
+
+## The license line
+
+| | |
+| --- | --- |
+| This project, the compiler, the runtime | **MIT** |
+| Anything under `gallery/` in the Ranger repository | **AGPL-3.0-or-later** |
+
+EVG, Rave, RangerFlow, Vela, DataGrid, the Office and PDF stacks are the
+gallery. Nothing from it is fetched by default. `scripts/add-gallery.sh` adds
+one on purpose, and it prints what the AGPL means before it does.
+
+**Do not add a gallery dependency without saying what it means first.**
+Distributing a program built on gallery code — including over a network — puts
+that program under the AGPL unless the author holds a separate commercial
+license. Compiling their own program with Ranger imposes nothing.
+
+`vendor/` is gitignored for the same reason: fetched AGPL sources do not belong
+in this MIT tree.
+
+## Where the rest is
+
+The gallery, the full example corpus and the compiler's own sources are in the
+[Ranger repository](https://github.com/terotests/Ranger).
+[LICENSING.md](https://github.com/terotests/Ranger/blob/master/LICENSING.md) is
+the license split in full; the
+[documentation](https://terotests.github.io/Ranger/docs/) has types, optionals,
+traits, generics and the operator reference.

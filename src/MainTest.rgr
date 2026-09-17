@@ -1,0 +1,47 @@
+; SPDX-License-Identifier: MIT
+;
+; MainTest.rgr — `npm test`.
+;
+; It exits non-zero when an expectation fails, which is the part that matters:
+; a test that only prints is a test CI cannot fail on. Run it on more than one
+; target when the code has to be right on more than one —
+;
+;   scripts/rgr run src/MainTest.rgr
+;   scripts/rgr run src/MainTest.rgr -l=python
+;   scripts/rgr run src/MainTest.rgr -l=go
+
+Import "Greeter.rgr"
+
+class MainTest {
+    def failures:int 0
+
+    Constructor () {
+    }
+
+    fn expect:void (label:string got:string want:string) {
+        if (got == want) {
+            print ("  ok   " + label)
+        } {
+            def msg:string ((((("  FAIL " + label) + ": got '") + got) + "', wanted '") + want)
+            print (msg + "'")
+            failures = (failures + 1)
+        }
+    }
+
+    sfn m@(main):void () {
+        def t (new MainTest())
+        def g (new Greeter("hei"))
+
+        t.expect("hello", (g.hello("maailma")), "hei maailma")
+        t.expect("shout", (g.shout("Ranger")), "hei Ranger!")
+
+        def custom (new Greeter("moi"))
+        t.expect("greeting is a field", (custom.hello("sinä")), "moi sinä")
+
+        if (t.failures > 0) {
+            print ((to_string t.failures) + " failed")
+            exit 1
+        }
+        print "all good"
+    }
+}
