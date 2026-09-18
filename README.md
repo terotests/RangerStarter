@@ -31,7 +31,7 @@ scripts/rgr             compile and run, and FAIL when the compile fails
 scripts/targets.sh      all fourteen targets, then run the ones this machine has
 scripts/deps.sh         fetch what ranger.json names, and fail when the fetch fails
 scripts/package.sh      package.json, pyproject.toml, Package.swift, build.gradle.kts, …
-scripts/add-gallery.sh  opt in to an AGPL gallery package, on purpose
+scripts/add-gallery.sh  add EVG (MIT) or opt in to an AGPL gallery package
 ranger.json             Ranger's own package file: entry point and dependencies
 .claude/skills/         agent skills, loaded by Claude Code in this directory
 AGENTS.md               the same instructions for any coding agent
@@ -139,7 +139,7 @@ subdirectory:
     "evg": {
       "git": "https://github.com/terotests/Ranger.git",
       "rev": "HEAD",
-      "subdir": "gallery/evg"
+      "subdir": "lib/evg"
     }
   }
 }
@@ -148,7 +148,8 @@ subdirectory:
 `npm run deps` fetches them — the compiler speaks the Git pack protocol
 itself, so no `git` process is spawned — and writes `ranger.lock` with the
 resolved commit and a content hash. Transitive dependencies come with it: ask
-for `vela` and `evg` arrives too, because `gallery/vela/ranger.json` says so.
+for `vela` and `evg` arrives too, because `gallery/vela/ranger.json` says so —
+and `image` and `zip` with it, because `lib/evg/ranger.json` names them.
 Import either kind the same way:
 
 ```ranger
@@ -217,19 +218,23 @@ instead, for working in a directory that is not this one.
 
 | | |
 | --- | --- |
-| This starter, the compiler, the runtime, `lib/` | **MIT** |
+| This starter, the compiler, the runtime, `lib/` — including EVG (`lib/evg`) and the image codecs (`lib/image`) | **MIT** |
 | Anything under `gallery/` in the Ranger repository | **AGPL-3.0-or-later** |
 
-EVG (a CSS layout engine with no browser in it, which prints PDF, PNG, HTML,
-PowerPoint, Word and Figma files), Rave, RangerFlow, Vela, DataGrid and the
-Office stack are the gallery. They are not sample code; they are the
-application stack, and they are deliberately not MIT.
+EVG — a CSS layout engine with no browser in it: flex, grid, stylesheets,
+text, and a display list any painter can draw — is MIT, like the compiler. A
+program with a screen is still your program.
 
-**Nothing from the gallery is fetched by default.** When you want one:
+Rave, RangerFlow, Vela, DataGrid, the Office stack and the PDF tools are the
+gallery. They are not sample code; they are the application stack, and they
+are deliberately not MIT.
+
+**Nothing is fetched by default.** When you want one:
 
 ```bash
 scripts/add-gallery.sh              # what can be added
-scripts/add-gallery.sh evg          # adds it — after saying what the AGPL means
+scripts/add-gallery.sh evg          # adds lib/evg — MIT, no notice needed
+scripts/add-gallery.sh rave         # adds gallery/rave — after saying what the AGPL means
 scripts/add-gallery.sh --skills     # the evg-edit and rave skills
 ```
 

@@ -36,12 +36,14 @@ third — from one source, which is the one thing Ranger promises not to do.
 
 The rest of the index — a PDF with no browser in it, Markdown to PowerPoint,
 diagrams from Mermaid and D2, Vega charts, a Figma reader, a spreadsheet, an
-application — lives in the Ranger repository under `gallery/`, and is
+application — lives in the Ranger repository. EVG itself, the layout engine
+under `lib/evg`, is **MIT**; the applications under `gallery/` are
 **AGPL-3.0-or-later** rather than MIT. Each entry's `add` field is the command:
 
 ```bash
 scripts/add-gallery.sh          # what can be added, and what it costs
-scripts/add-gallery.sh evg
+scripts/add-gallery.sh evg      # MIT
+scripts/add-gallery.sh rave     # AGPL — it says so before adding
 ```
 
 Read [the license note](../README.md#the-gallery-and-the-license-line) first.
