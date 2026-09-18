@@ -6,13 +6,16 @@
 # than a dependency that ships with the starter.
 #
 #   This starter, the compiler, the runtime and lib/   MIT
+#     — including lib/evg (the layout engine) and lib/image (the codecs)
 #   Anything under gallery/                            AGPL-3.0-or-later
 #
-# EVG, Rave, RangerFlow, Vela, the Office stack, DataGrid, the PDF writer: they
-# are not sample code, they are the application stack, and building a product
-# on them puts that product under the AGPL unless you hold a separate
-# commercial license. Compiling your OWN program with Ranger does not — that is
-# the whole point of the split.
+# Rave, RangerFlow, Vela, the Office stack, DataGrid, the PDF writer: they are
+# not sample code, they are the application stack, and building a product on
+# them puts that product under the AGPL unless you hold a separate commercial
+# license. Compiling your OWN program with Ranger does not — that is the whole
+# point of the split. EVG itself is MIT: a program with a screen is still your
+# program. `add-gallery.sh evg` adds it without the notice below, because
+# there is nothing to warn about.
 #
 #   https://github.com/terotests/Ranger/blob/master/LICENSING.md
 #
@@ -21,8 +24,9 @@
 # tree.
 #
 #   scripts/add-gallery.sh                 list what can be added
-#   scripts/add-gallery.sh evg             add gallery/evg (asks first)
-#   scripts/add-gallery.sh evg --yes       add it without asking
+#   scripts/add-gallery.sh evg             add lib/evg (MIT, no prompt)
+#   scripts/add-gallery.sh rave            add gallery/rave (asks first)
+#   scripts/add-gallery.sh rave --yes      add it without asking
 #   scripts/add-gallery.sh --skills        install the evg-edit and rave skills
 #
 # SPDX-License-Identifier: MIT
@@ -31,9 +35,17 @@ set -u
 REPO="https://github.com/terotests/Ranger.git"
 REV="HEAD"
 
+ # MIT packages under lib/ in the Ranger repository.
+known_lib() {
+  cat <<'LIST'
+evg          a CSS layout and rendering engine with no browser in it: flex, grid, stylesheets, text, the display list
+image        the JPEG and PNG codecs and the raster buffers EVG decodes and paints with
+LIST
+}
+
+# AGPL packages under gallery/.
 known() {
   cat <<'LIST'
-evg          a CSS layout and rendering engine with no browser in it; prints PDF, PNG, HTML, PPTX, DOCX
 rave         routed, responsive, accessible applications, checked without a browser
 rangerflow   Mermaid / PlantUML / Graphviz / D2 parsed and laid out as real geometry
 vela         Vega and Vega-Lite charts
@@ -49,8 +61,12 @@ LIST
 }
 
 usage() {
-  echo "usage: scripts/add-gallery.sh <name> [--yes]    add gallery/<name> as a dependency"
+  echo "usage: scripts/add-gallery.sh <name> [--yes]    add lib/<name> or gallery/<name> as a dependency"
   echo "       scripts/add-gallery.sh --skills          install the evg-edit and rave agent skills"
+  echo
+  echo "Libraries (MIT, under lib/ — added without a prompt):"
+  echo
+  known_lib | sed 's/^/  /'
   echo
   echo "Gallery projects (AGPL-3.0-or-later):"
   echo
@@ -110,6 +126,17 @@ esac
 yes=0
 if [ "${2-}" = "--yes" ] || [ "${2-}" = "-y" ]; then yes=1; fi
 
+# Where the package lives in the Ranger repository, and so which license.
+case "$name" in
+  evg|image|zip) subdir="lib/$name"; license="MIT" ;;
+  *)             subdir="gallery/$name"; license="AGPL-3.0-or-later" ;;
+esac
+
+if [ "$license" = "MIT" ]; then
+  echo
+  echo "  $subdir is MIT, like this starter and the compiler. Adding it."
+  yes=1
+else
 cat <<NOTE
 
   gallery/$name is licensed AGPL-3.0-or-later.
@@ -125,6 +152,8 @@ cat <<NOTE
 
 NOTE
 
+fi
+
 if [ $yes -eq 0 ]; then
   printf "  Add gallery/%s to this project? [y/N] " "$name"
   read -r answer </dev/tty || answer=""
@@ -134,15 +163,15 @@ if [ $yes -eq 0 ]; then
   esac
 fi
 
-node - "$name" "$REPO" "$REV" <<'NODE'
+node - "$name" "$REPO" "$REV" "$subdir" <<'NODE'
 const fs = require("node:fs");
-const [name, repo, rev] = process.argv.slice(2);
+const [name, repo, rev, subdir] = process.argv.slice(2);
 const file = "ranger.json";
 const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
 pkg.dependencies = pkg.dependencies || {};
-pkg.dependencies[name] = { git: repo, rev, subdir: `gallery/${name}` };
+pkg.dependencies[name] = { git: repo, rev, subdir };
 fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
-console.log(`ranger.json: dependency "${name}" -> gallery/${name}`);
+console.log(`ranger.json: dependency "${name}" -> ${subdir}`);
 NODE
 
 echo
@@ -172,10 +201,16 @@ if (pkg.dependencies && pkg.dependencies[name]) {
 }
 NODE
 
+if [ "$license" = "MIT" ]; then
+  vendor_note="vendor/ is gitignored: fetched sources are rebuilt from ranger.lock, not committed."
+else
+  vendor_note="vendor/ is gitignored: it is someone else's AGPL source, not yours."
+fi
+
 cat <<DONE
 
   vendor/ranger/$name is on disk and ranger.lock records the commit.
-  vendor/ is gitignored: it is someone else's AGPL source, not yours.
+  $vendor_note
 
   Import it from a .rgr file with the pkg: form —
 

@@ -22,14 +22,16 @@ npm run example:calc
 scripts/rgr run examples/calc/Calc.rgr -l=python
 ```
 
-**`needs: "gallery"`** — it is an AGPL package in the Ranger repository, and
-the entry's `add` field is the command that fetches it. Do not run that
-command without saying what it means first: building on gallery code puts the
-resulting program under the AGPL unless the user holds a commercial license.
-Name the license, then offer it:
+**`needs: "gallery"`** — it is a package in the Ranger repository, and the
+entry's `add` field is the command that fetches it. `evg` (and `image`) are
+MIT under `lib/` and need no notice. Everything under `gallery/` is AGPL: do
+not run that command without saying what it means first, because building on
+gallery code puts the resulting program under the AGPL unless the user holds
+a commercial license. Name the license, then offer it:
 
 ```bash
-scripts/add-gallery.sh evg
+scripts/add-gallery.sh evg      # MIT — just adds it
+scripts/add-gallery.sh rave     # AGPL — say so first
 ```
 
 **`needs: "repo"`** — it is a demo that only makes sense inside a full Ranger

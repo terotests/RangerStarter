@@ -16,7 +16,7 @@ src/MainTest.rgr       npm test — exits non-zero when an expectation fails
 examples/              worked examples; examples/INDEX.json says what each does
 scripts/rgr            compile and run, and FAIL when the compile fails
 scripts/targets.sh     all fourteen targets, and run the ones this machine has
-scripts/add-gallery.sh opt into an AGPL gallery package
+scripts/add-gallery.sh add EVG (MIT) or opt into an AGPL gallery package
 ranger.json            Ranger's own package file: entry point and dependencies
 build/                 everything the compiler writes — gitignored
 ```
@@ -81,22 +81,26 @@ A remote one is a git repository, a revision and a subdirectory, and
 ```json
 { "dependencies": {
     "evg": { "git": "https://github.com/terotests/Ranger.git",
-             "rev": "HEAD", "subdir": "gallery/evg" } } }
+             "rev": "HEAD", "subdir": "lib/evg" } } }
 ```
 
 Either way the import is `Import "pkg:evg/EVGElement.rgr"`.
 
 ## The gallery, and the license line
 
-EVG, Rave, RangerFlow, Vela, the Office stack: they live in the Ranger
-repository under `gallery/` and they are **AGPL-3.0-or-later**. This starter,
-the compiler and the runtime are MIT.
+EVG, the layout engine, lives in the Ranger repository under `lib/evg` and
+is **MIT**, like this starter, the compiler and the runtime; so are the image
+codecs under `lib/image`. `scripts/add-gallery.sh evg` adds it with no notice.
+
+Rave, RangerFlow, Vela, the Office stack: they live under `gallery/` and they
+are **AGPL-3.0-or-later**.
 
 Nothing from the gallery is fetched by default. When one is genuinely wanted:
 
 ```bash
 scripts/add-gallery.sh              # what can be added
-scripts/add-gallery.sh evg          # adds it, after saying what the AGPL means
+scripts/add-gallery.sh evg          # adds lib/evg (MIT), no prompt
+scripts/add-gallery.sh rave         # adds it, after saying what the AGPL means
 scripts/add-gallery.sh --skills     # installs the evg-edit and rave skills
 ```
 

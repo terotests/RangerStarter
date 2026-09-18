@@ -74,12 +74,14 @@ claim.
 
 | | |
 | --- | --- |
-| This project, the compiler, the runtime | **MIT** |
+| This project, the compiler, the runtime, `lib/` — including EVG (`lib/evg`) and `lib/image` | **MIT** |
 | Anything under `gallery/` in the Ranger repository | **AGPL-3.0-or-later** |
 
-EVG, Rave, RangerFlow, Vela, DataGrid, the Office and PDF stacks are the
-gallery. Nothing from it is fetched by default. `scripts/add-gallery.sh` adds
-one on purpose, and it prints what the AGPL means before it does.
+EVG, the layout engine, is MIT: `scripts/add-gallery.sh evg` adds it with no
+notice, because there is nothing to warn about. Rave, RangerFlow, Vela,
+DataGrid, the Office and PDF stacks are the gallery. Nothing from it is
+fetched by default. `scripts/add-gallery.sh` adds one on purpose, and it
+prints what the AGPL means before it does.
 
 **Do not add a gallery dependency without saying what it means first.**
 Distributing a program built on gallery code — including over a network — puts
