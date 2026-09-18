@@ -41,8 +41,8 @@ build/                  everything the compiler writes — gitignored
 
 ## The one thing to know
 
-**The Ranger compiler prints `[FAIL]` and then exits 0.** Written the obvious
-way,
+**Ranger compilers through 3.5.1 print `[FAIL]` and then exit 0.** Written the
+obvious way,
 
 ```bash
 npx rgrc src/Main.rgr -o=Main.js && node build/Main.js     # ← DO NOT
@@ -52,9 +52,10 @@ the `&&` is satisfied by that zero, the *previous* build is still on disk, and
 node runs that one. The program prints what it printed before your change: the
 edit looks applied, the test looks green, and neither is true.
 
-`scripts/rgr` is the whole of the fix. It deletes the output first, reads the
-compiler's log for the failure the exit status omits, and treats a missing
-output file as an error.
+A failed compile exits non-zero in later compilers, but the one on this machine
+is whatever `npm install` resolved. `scripts/rgr` does not depend on the
+answer: it deletes the output first, reads the compiler's log as well as its
+exit status, and treats a missing output file as an error.
 
 ```bash
 scripts/rgr run   src/Main.rgr             # compile to JavaScript and run it
@@ -161,10 +162,10 @@ the lock does not already cover. Commit both `ranger.json` and `ranger.lock`;
 `scripts/add-gallery.sh` pins the resolved commit into `ranger.json` for you,
 because `rev: HEAD` is a moving target rather than a dependency.
 
-`rgrc install` shares the compiler's habit of printing `[FAIL]` and exiting 0,
-so these go through `scripts/deps.sh`, which reads the log — otherwise a
-`-frozen` check that could not cover the lock would still report a green CI
-build.
+`rgrc install` shared the compiler's habit of printing `[FAIL]` and exiting 0,
+so these go through `scripts/deps.sh`, which reads the log — otherwise, on a
+compiler through 3.5.1, a `-frozen` check that could not cover the lock would
+still report a green CI build.
 
 ## Shipping it as a package
 

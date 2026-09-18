@@ -17,12 +17,12 @@ scripts/rgr check src/File.rgr      # does it compile?
 scripts/rgr run   src/Main.rgr      # compile and run
 ```
 
-The compiler **exits 0 even when compilation fails** — it prints `[FAIL]` and
-`Compilation FAILED` and returns success. Never chain a run onto a build with
-`&&`: the `&&` is satisfied by that zero, the PREVIOUS build is still on disk,
+A failed compile prints `[FAIL]` and `Compilation FAILED`. Compilers
+**through 3.5.1 returned success** there, so never chain a run onto a build
+with `&&`: that zero satisfies the `&&`, the PREVIOUS build is still on disk,
 node runs that one, and the edit looks applied when it is not. `scripts/rgr`
-deletes the output first and reads the log for the failure the exit status
-omits — use it rather than calling `rgrc` directly.
+deletes the output first and reads the log as well as the exit status, so it is
+right on either compiler — use it rather than calling `rgrc` directly.
 
 ## The errors that point at the wrong line
 
