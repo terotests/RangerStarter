@@ -56,7 +56,9 @@ Every `npm` script in `package.json` goes through it.
   `toString`, `has` or `sqrt` on your own class compiles, and then every CALL
   SITE fails with "Class X does not have method …". Rename.
 - **Never start a statement with a parenthesised receiver.** Bind first:
-  `def recv:T (expr)` then `recv.method()`.
+  `def recv:T (expr)` then `recv.method()`. Inside an expression it is fine,
+  `((unwrap x).v == 1)` included; only a method call on one inside an infix
+  expression, or one in a loop condition, still needs the receiver bound.
 - **Optional annotations go on the name**, not the type:
   `fn find@(optional):Thing (path:string)`.
 - Integer division is `idiv`; `/` is real division. Elvis is prefix:
