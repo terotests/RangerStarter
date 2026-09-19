@@ -1,0 +1,197 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileCli -- the command line surface.
+;
+; The broadest surface Ranger has: every target except `llvm` can carry a program
+; with a `main` in it, and the only thing a CLI needs that a library does not is
+; an entry point and a way to run it.
+;
+; It is also the surface that owns `scripts/rgr.js`, because every other surface's
+; build goes through the same wrapper.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileCli extends StarterProfile {
+
+    Constructor () {
+        id = "cli"
+    }
+
+    fn defaultTarget:string () {
+        return "es6"
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+        ; `llvm` writes LLVM IR. It is a real target and it is not a program you
+        ; can run with `npm start`, so it may ride along with another target but
+        ; not be the only one.
+        def chosen:[string] (cfg.targetsOf(id))
+        if ((array_length chosen) == 1) {
+            if ((itemAt chosen 0) == "llvm") {
+                plan.addProblem((StarterProblem.about("surfaces.cli.targets" "llvm is the only target chosen for the command line surface. It writes LLVM IR, which needs `clang` to become a program -- pick a target that runs as well, or use the desktop surface.")))
+            }
+        }
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "entry" "src/Main.rgr"))
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((StarterText.stemName(entry))))
+        def name:string (cfg.projectName())
+
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+
+        ; The two seeds. A library project that also has a CLI gets its entry from
+        ; the library profile, so the seed is only written when this surface is
+        ; the one that owns the entry point.
+        if ((cfg.isLibrary()) == false) {
+            plan.addFile((PlanFile.seed(entry (StarterTemplates.mainSeed(name className)) id)))
+            def testPath:string ((StarterText.dirName(entry)) + "/" + className + "Test.rgr")
+            def entryImport:string (StarterText.baseName(entry))
+            plan.addFile((PlanFile.seed(testPath (StarterTemplates.testSeed(name className entryImport)) id)))
+        }
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((StarterText.stemName(entry))))
+        def testPath:string ((StarterText.dirName(entry)) + "/" + className + "Test.rgr")
+
+        plan.addScript((PlanScript.entry("start" ("node scripts/rgr.js run " + entry) id)))
+        plan.addScript((PlanScript.entry("build" ("node scripts/rgr.js build " + entry) id)))
+        plan.addScript((PlanScript.entry("check" ("node scripts/rgr.js check " + entry) id)))
+        if ((cfg.isLibrary()) == false) {
+            plan.addScript((PlanScript.entry("test" ("node scripts/rgr.js run " + testPath) id)))
+        }
+
+        ; One build script per target beyond the default. `build` already does
+        ; es6, so naming it twice would be noise.
+        def chosen:[string] (this.myTargets(cfg targets))
+        for chosen t:string i {
+            if (t == "es6") {
+                continue
+            }
+            def flag:string (targets.languageFlagOf(t))
+            def command:string ("node scripts/rgr.js build " + entry + " -l=" + flag)
+            if (t == "typescript") {
+                ; Not a target: `-l=es6 -typescript`. A wizard that offers
+                ; "TypeScript" has to map it, and this is where.
+                command = ("node scripts/rgr.js build " + entry + " -l=es6 -- -typescript")
+            }
+            plan.addScript((PlanScript.entry(("build:" + t) command id)))
+        }
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def chosen:[string] (this.myTargets(cfg targets))
+        def l:[string]
+        push l "## Command line"
+        push l ""
+        push l ("Entry point: `" + entry + "`. Targets: " + (StarterText.joinWith(chosen ", ")) + ".")
+        push l ""
+        push l "**Never call `rgrc` directly.** Compilers through 3.5.1 print"
+        push l "`Compilation FAILED` and exit **0**, so `rgrc ... && node build/Main.js` runs"
+        push l "the PREVIOUS build: the edit looks applied and the test looks green when"
+        push l "neither is true. `scripts/rgr.js` deletes the output first, reads the log as well"
+        push l "as the status, and fails on a missing output file. Every npm script here goes"
+        push l "through it."
+        push l ""
+        push l "```bash"
+        push l "npm start                       # compile and run"
+        push l "npm test                        # exits non-zero when an expectation fails"
+        push l ("node scripts/rgr.js check " + entry + "   # does it compile? nothing else")
+        push l "```"
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-cli" 300 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def chosen:[string] (this.myTargets(cfg targets))
+        for chosen t:string i {
+            def program:string (ProfileCli.toolFor(t))
+            if ((strlen program) == 0) {
+                continue
+            }
+            def check:PlanCheck (PlanCheck.tool("Command line" ((targets.languageFlagOf(t)) + " toolchain") program (ProfileCli.hintFor(t))))
+            ; Generating the code needs none of these -- only running or building
+            ; the output does -- so a missing one is a warning.
+            check.optional = true
+            plan.addCheck(check)
+        }
+    }
+
+    ; What has to be on PATH to build or run the output of one target. Generating
+    ; it needs nothing but node.
+    sfn toolFor:string (target:string) {
+        switch target {
+            case "es6" {
+                return "node"
+            }
+            case "typescript" {
+                return "tsc"
+            }
+            case "python" {
+                return "python3"
+            }
+            case "go" {
+                return "go"
+            }
+            case "rust" {
+                return "cargo"
+            }
+            case "cpp" {
+                return "c++"
+            }
+            case "csharp" {
+                return "dotnet"
+            }
+            case "java7" {
+                return "javac"
+            }
+            case "kotlin" {
+                return "kotlinc"
+            }
+            case "scala" {
+                return "scalac"
+            }
+            case "swift6" {
+                return "swiftc"
+            }
+            case "swift3" {
+                return "swiftc"
+            }
+            case "dart" {
+                return "dart"
+            }
+            case "php" {
+                return "php"
+            }
+            case "llvm" {
+                return "clang"
+            }
+        }
+        return ""
+    }
+
+    sfn hintFor:string (target:string) {
+        switch target {
+            case "llvm" {
+                return "LLVM IR needs `clang` to become a program. Generating the .ll file does not."
+            }
+            case "typescript" {
+                return "TypeScript output is plain .ts; `tsc` is only needed to type-check or emit .d.ts."
+            }
+        }
+        return ("Needed to build or run the " + target + " output. Generating it needs only node.")
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-start")
+    }
+}

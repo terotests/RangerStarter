@@ -12,7 +12,7 @@
     "start": "scripts/rgr run src/Main.rgr",
     "build": "scripts/rgr build src/Main.rgr",
     "check": "scripts/rgr check src/Main.rgr",
-    "test": "scripts/rgr run src/MainTest.rgr",
+    "test": "scripts/rgr run src/MainTest.rgr && scripts/rgr run src/starter/StarterTest.rgr",
     "targets": "scripts/targets.sh src/Main.rgr",
     "targets:run": "scripts/targets.sh --run src/Main.rgr",
     "example:calc": "scripts/rgr run examples/calc/Calc.rgr",
@@ -22,9 +22,19 @@
     "gallery": "scripts/add-gallery.sh",
     "package": "scripts/package.sh",
     "package:npm": "scripts/package.sh npm",
-    "package:all": "scripts/package.sh all"
+    "package:all": "scripts/package.sh all",
+    "starter:build": "scripts/rgr build src/starter/StarterMain.rgr -d=bin",
+    "starter:test": "scripts/rgr run src/starter/StarterTest.rgr",
+    "starter:test:python": "scripts/rgr run src/starter/StarterTest.rgr -l=python",
+    "starter:test:go": "scripts/rgr run src/starter/StarterTest.rgr -l=go",
+    "starter:targets": "scripts/targets.sh src/starter/StarterTest.rgr",
+    "starter:dump": "scripts/rgr run src/starter/StarterDump.rgr",
+    "prepare": "npm run starter:build"
   },
   "devDependencies": {
     "ranger-compiler": "^3.5.1"
+  },
+  "bin": {
+    "ranger-starter": "bin/ranger-starter.js"
   }
 }

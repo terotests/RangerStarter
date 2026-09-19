@@ -1,0 +1,89 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterHash -- a fingerprint of a generated file, so the tool can tell a file
+; it wrote and nobody has touched from a file somebody has edited.
+;
+; IT IS NOT A CRYPTOGRAPHIC DIGEST, and it is not called one. The job is:
+;
+;     I wrote this file last time. Is it still what I wrote?
+;
+; A yes means the file may be rewritten or removed. A no means it belongs to the
+; author now and is reported rather than overwritten. Nothing about that is a
+; security question -- the adversary is a text editor, not an attacker -- so
+; there is no reason to pull a SHA-256 into a core whose whole point is having no
+; dependencies.
+;
+; WHY NOT FNV-1a, which is the obvious dependency-free choice. FNV multiplies by
+; 16777619 and relies on wrapping at 32 or 64 bits. Ranger's `int` is a 64-bit
+; integer on Go, Rust and C++, and a double on JavaScript, where an integer stops
+; being exact above 2^53 -- so the same file would fingerprint differently
+; depending on which target wrote the manifest, and the whole mechanism would
+; report the author's untouched files as edited. Every intermediate below stays
+; under 1.4e11, which is exact everywhere.
+;
+; Two independent rolling hashes and the length. Sixty-odd bits over a
+; mechanism whose failure mode is "offers to overwrite a file it should have
+; kept", on a corpus of a few dozen files per project.
+
+class StarterHash {
+
+    Constructor () {
+    }
+
+    ; A rolling polynomial hash, mod a prime under 2^31. The largest
+    ; intermediate is (prime - 1) * base + 255, which is 1.31e11 for the values
+    ; below -- exact as a double and exact as an int64.
+    sfn rolling:int (text:string base:int prime:int) {
+        def h:int 0
+        def cnt:int (strlen text)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt text i)
+            ; A codepoint above the basic plane would exceed the 1.4e11 bound
+            ; with a large base, so it is folded before it is mixed in. Two
+            ; different codepoints folding together is a collision inside one
+            ; character, which the second hash and the length cover.
+            if (c > 65535) {
+                c = 65535 + (c - (idiv c 65536) * 65536)
+            }
+            h = ((h * base) + c)
+            h = h - ((idiv h prime) * prime)
+            i = i + 1
+        }
+        return h
+    }
+
+    ; The fingerprint written into `.ranger/generated.json`. Length first,
+    ; because a length that differs is the commonest edit and makes the rest
+    ; unnecessary to read.
+    sfn of:string (text:string) {
+        def a:int (StarterHash.rolling(text 131 1000000007))
+        def b:int (StarterHash.rolling(text 8191 999999937))
+        def out:string (to_string (strlen text))
+        out = out + "-" + (StarterHash.base36(a))
+        out = out + "-" + (StarterHash.base36(b))
+        return out
+    }
+
+    sfn base36:string (value:int) {
+        def digits:string "0123456789abcdefghijklmnopqrstuvwxyz"
+        if (value == 0) {
+            return "0"
+        }
+        def n:int value
+        if (n < 0) {
+            n = 0 - n
+        }
+        def out:string ""
+        while (n > 0) {
+            def d:int (n - ((idiv n 36) * 36))
+            out = (substring digits d (d + 1)) + out
+            n = (idiv n 36)
+        }
+        return out
+    }
+
+    sfn matches:boolean (text:string fingerprint:string) {
+        return ((StarterHash.of(text)) == fingerprint)
+    }
+}

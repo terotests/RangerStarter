@@ -1,0 +1,513 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterMain -- argv in, exit status out.
+;
+; Six commands, one engine. A human runs `configure`; an agent or a CI job edits
+; `ranger.project.json` and runs `plan` then `apply`. There is no second code
+; path for the second case -- that is the point of the whole architecture, and
+; this file is where it shows: `apply` is four lines, because everything it needs
+; was decided by pure functions before it was called.
+;
+;   ranger-starter init      --name N [flags]   write a configuration, then apply it
+;   ranger-starter configure                    change it (the wizard is M7)
+;   ranger-starter plan                         what would change; writes nothing
+;   ranger-starter apply                        do it
+;   ranger-starter doctor                       can this machine build it?
+;   ranger-starter targets                      what the installed compiler has
+;
+; Exit status: 0 when it worked, 1 when the configuration or the plan has a
+; problem, 2 when the command line does not make sense. A tool an agent drives
+; has to be honest about that, because the agent reads the status before it reads
+; the words.
+
+Import "StarterPlanner.rgr"
+Import "StarterGenerator.rgr"
+Import "StarterHost.rgr"
+
+; A tiny argv reader. `--flag`, `--key value` and `--key=value`, and one
+; positional command. Nothing else, because nothing else is needed.
+class StarterArgs {
+
+    def command:string ""
+    def flags:[string:boolean]
+    def values:[string:string]
+    def problem:string ""
+
+    Constructor () {
+    }
+
+    sfn read:StarterArgs () {
+        def a (new StarterArgs())
+        def cnt:int (shell_arg_cnt)
+        def i:int 0
+        while (i < cnt) {
+            def arg:string (shell_arg i)
+            if (startsWith arg "--") {
+                def body:string (substring arg 2 (strlen arg))
+                def eq:int (indexOf body "=")
+                if (eq >= 0) {
+                    def key:string (substring body 0 eq)
+                    def value:string (substring body (eq + 1) (strlen body))
+                    set a.values key value
+                    i = i + 1
+                    continue
+                }
+                ; `--key value` when the next argument is not itself a flag;
+                ; `--key` on its own otherwise.
+                def hasNext:boolean false
+                def next:string ""
+                if ((i + 1) < cnt) {
+                    next = (shell_arg (i + 1))
+                    if ((startsWith next "--") == false) {
+                        hasNext = true
+                    }
+                }
+                if (StarterArgs.isBooleanFlag(body)) {
+                    set a.flags body true
+                    i = i + 1
+                    continue
+                }
+                if hasNext {
+                    set a.values body next
+                    i = i + 2
+                    continue
+                }
+                set a.flags body true
+                i = i + 1
+                continue
+            }
+            if ((strlen a.command) == 0) {
+                a.command = arg
+            } {
+                a.problem = ("unexpected argument `" + arg + "`")
+            }
+            i = i + 1
+        }
+        return a
+    }
+
+    ; A flag that never takes a value. Without this list, `--json plan` would read
+    ; `plan` as the value of `--json` and then complain that no command was given,
+    ; which is a confusing way to say "the flags go after the command".
+    sfn isBooleanFlag:boolean (name:string) {
+        if (name == "json") {
+            return true
+        }
+        if (name == "apply") {
+            return true
+        }
+        if (name == "no-install") {
+            return true
+        }
+        if (name == "dry-run") {
+            return true
+        }
+        if (name == "non-interactive") {
+            return true
+        }
+        if (name == "docs") {
+            return true
+        }
+        if (name == "strict-docs") {
+            return true
+        }
+        if (name == "help") {
+            return true
+        }
+        return false
+    }
+
+    fn has:boolean (name:string) {
+        return (has flags name)
+    }
+
+    fn value:string (name:string fallback:string) {
+        def hit@(optional):string (get values name)
+        if (null? hit) {
+            return fallback
+        }
+        return (unwrap hit)
+    }
+
+    fn hasValue:boolean (name:string) {
+        return (has values name)
+    }
+
+    ; A comma-separated list, with the empties dropped so `--surfaces cli,` works.
+    fn list:[string] (name:string) {
+        def out:[string]
+        def raw:string (this.value(name ""))
+        if ((strlen raw) == 0) {
+            return out
+        }
+        def parts:[string] (strsplit raw ",")
+        for parts part:string i {
+            def t:string (trim part)
+            if ((strlen t) > 0) {
+                push out t
+            }
+        }
+        return out
+    }
+}
+
+class StarterMain {
+
+    Constructor () {
+    }
+
+    sfn configPath:string () {
+        return "ranger.project.json"
+    }
+
+    ; Ask the compiler what targets it has; fall back to the bundled table.
+    ;
+    ; `rgrc -targets -json` does not exist in ranger-compiler 3.5.1. When it
+    ; lands, this starts answering "compiler" and nothing else changes -- which is
+    ; the whole reason the starter asks instead of knowing.
+    sfn loadTargets:StarterTargets (host:StarterHost) {
+        def args:[string]
+        push args "--no-install"
+        push args "rgrc"
+        push args "-targets"
+        push args "-json"
+        def result:[string] (host.capture("npx" args))
+        def code:string (itemAt result 0)
+        if (code != "0") {
+            return (StarterTargets.bundled())
+        }
+        def out:string (itemAt result 1)
+        def parser (new StarterJson())
+        def root:JsonValue (parser.parse((trim out)))
+        if ((parser.ok()) == false) {
+            return (StarterTargets.bundled())
+        }
+        return (StarterTargets.fromJson(root))
+    }
+
+    sfn loadConfig:StarterConfigLoad (host:StarterHost path:string) {
+        if ((host.exists(path)) == false) {
+            def missing (new StarterConfigLoad())
+            missing.ok = false
+            missing.problem = ("there is no `" + path + "` here. Run `ranger-starter init --name <name>` to make one.")
+            missing.config = (StarterConfig.defaults("app" "application"))
+            return missing
+        }
+        return (StarterConfig.load((host.readText(path))))
+    }
+
+    sfn printProblems:void (problems:[StarterProblem]) {
+        for problems p:StarterProblem i {
+            print ("  " + (StarterText.padRight(p.severity 8)) + (p.asLine()))
+        }
+    }
+
+    ; --- commands -------------------------------------------------------------
+
+    sfn commandPlan:int (host:StarterHost args:StarterArgs) {
+        def path:string (args.value("config" (StarterMain.configPath())))
+        def load:StarterConfigLoad (StarterMain.loadConfig(host path))
+        if (load.ok == false) {
+            print ("ranger-starter: " + load.problem)
+            return 1
+        }
+        def cfg:StarterConfig load.config
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        if (project.hasErrors()) {
+            print "ranger-starter: this configuration cannot be generated."
+            StarterMain.printProblems(project.problems)
+            return 1
+        }
+        def disk:DiskState (host.snapshot(project))
+        def filePlan:FilePlan (StarterGenerator.plan(project disk))
+        print (filePlan.asText())
+        print (filePlan.problemsText())
+        print ((filePlan.summary()) + ". Nothing was written.")
+        if (filePlan.hasErrors()) {
+            return 1
+        }
+        return 0
+    }
+
+    sfn commandApply:int (host:StarterHost args:StarterArgs) {
+        def path:string (args.value("config" (StarterMain.configPath())))
+        def load:StarterConfigLoad (StarterMain.loadConfig(host path))
+        if (load.ok == false) {
+            print ("ranger-starter: " + load.problem)
+            return 1
+        }
+        def cfg:StarterConfig load.config
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        if (project.hasErrors()) {
+            print "ranger-starter: this configuration cannot be generated."
+            StarterMain.printProblems(project.problems)
+            return 1
+        }
+        def disk:DiskState (host.snapshot(project))
+        def filePlan:FilePlan (StarterGenerator.plan(project disk))
+        if (filePlan.hasErrors()) {
+            print "ranger-starter: the plan has problems, so nothing was written."
+            StarterMain.printProblems(filePlan.problems)
+            return 1
+        }
+        if (args.has("dry-run")) {
+            host.dryRun = true
+        }
+        def report:ApplyReport (host.apply(filePlan (args.has("no-install") == false)))
+        print (filePlan.asText())
+        print (filePlan.problemsText())
+        print (report.summary())
+
+        if ((args.has("no-install")) == false) {
+            for project.commands c:PlanCommand i {
+                print ("running: " + (c.commandLine()) + "  -- " + c.why)
+                def okRun:boolean (host.runCommand(c))
+                if (okRun == false) {
+                    print ("ranger-starter: `" + (c.commandLine()) + "` failed. The files are written; run it yourself when you have sorted that out.")
+                    return 1
+                }
+            }
+        }
+        return 0
+    }
+
+    sfn commandInit:int (host:StarterHost args:StarterArgs) {
+        def path:string (args.value("config" (StarterMain.configPath())))
+        if (host.exists(path)) {
+            print ("ranger-starter: `" + path + "` already exists. Use `configure` to change it, or `apply` to generate from it.")
+            return 1
+        }
+        def name:string (args.value("name" ""))
+        if ((strlen name) == 0) {
+            print "ranger-starter: init needs `--name <name>`."
+            print "  ranger-starter init --name northwind --surfaces cli --targets es6,go --docs"
+            return 2
+        }
+        def kind:string (args.value("kind" "application"))
+        def cfg:StarterConfig (StarterConfig.defaults(name kind))
+
+        def surfaces:[string] (args.list("surfaces"))
+        if ((array_length surfaces) == 0) {
+            push surfaces "cli"
+        }
+        def chosenTargets:[string] (args.list("targets"))
+        if ((array_length chosenTargets) == 0) {
+            push chosenTargets "es6"
+        }
+        for surfaces sid:string i {
+            cfg.setEnabled(sid true)
+            if (StarterConfig.isMultiTarget(sid)) {
+                cfg.setTargets(sid chosenTargets)
+            }
+        }
+        def devices:[string] (args.list("devices"))
+        if ((array_length devices) > 0) {
+            for surfaces sid:string i {
+                if (sid == "android") {
+                    cfg.setDevices(sid devices)
+                }
+                if (sid == "ios") {
+                    cfg.setDevices(sid devices)
+                }
+            }
+        }
+        def wantsDocs:boolean (args.has("docs"))
+        cfg.setDocs(wantsDocs wantsDocs (args.has("strict-docs")))
+        def agentsChoice:string (args.value("agents" "generic"))
+        def wantsClaude:boolean false
+        if (agentsChoice == "claude") {
+            wantsClaude = true
+        }
+        if (agentsChoice == "both") {
+            wantsClaude = true
+        }
+        cfg.setAgents(true wantsClaude "auto")
+
+        host.writeText(path (cfg.asText()))
+        print ("ranger-starter: wrote " + path)
+        if (args.has("apply")) {
+            return (StarterMain.commandApply(host args))
+        }
+        print "Review it, then: ranger-starter plan  /  ranger-starter apply"
+        return 0
+    }
+
+    sfn commandConfigure:int (host:StarterHost args:StarterArgs) {
+        if (args.has("apply")) {
+            return (StarterMain.commandApply(host args))
+        }
+        ; The questionnaire is milestone M7. Saying so, and saying exactly what to
+        ; do instead, is better than opening a prompt that does not work.
+        def path:string (args.value("config" (StarterMain.configPath())))
+        print "ranger-starter: the interactive wizard is not built yet (PLAN_STARTER.md, M7)."
+        print ""
+        print ("Until then, edit `" + path + "` -- it is the source of truth, and it is the")
+        print "same file the wizard will write. Then:"
+        print ""
+        print "  ranger-starter plan     # what would change; writes nothing"
+        print "  ranger-starter apply    # do it"
+        print ""
+        print "`ranger-starter init --name <name> --surfaces cli --targets es6,go` writes a"
+        print "starting configuration with every surface listed and switched off."
+        return 0
+    }
+
+    sfn commandDoctor:int (host:StarterHost args:StarterArgs) {
+        def path:string (args.value("config" (StarterMain.configPath())))
+        def load:StarterConfigLoad (StarterMain.loadConfig(host path))
+        if (load.ok == false) {
+            print ("ranger-starter: " + load.problem)
+            return 1
+        }
+        def cfg:StarterConfig load.config
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        print ("Ranger project doctor -- " + (cfg.projectName()))
+        print ""
+        def actionable:int 0
+        def groups:[string] (project.checkGroups())
+        for groups group:string gi {
+            print group
+            for project.checks c:PlanCheck ci {
+                if (c.group != group) {
+                    continue
+                }
+                def found:boolean (host.hasProgram(c.program))
+                if found {
+                    print ("  ok        " + c.label + "  (" + c.program + ")")
+                } {
+                    if c.optional {
+                        print ("  optional  " + c.label + "  -- " + c.program + " is not on PATH")
+                        print ("            " + c.hint)
+                    } {
+                        print ("  MISSING   " + c.label + "  -- " + c.program + " is not on PATH")
+                        print ("            " + c.hint)
+                        actionable = actionable + 1
+                    }
+                }
+            }
+            print ""
+        }
+        if (targets.source == "bundled") {
+            print "note: this compiler does not answer `rgrc -targets -json`, so the target"
+            print "      list is the one bundled with ranger-starter."
+            print ""
+        }
+        if (actionable == 0) {
+            print "nothing actionable"
+            return 0
+        }
+        print ((to_string actionable) + " actionable problem(s)")
+        return 1
+    }
+
+    sfn commandTargets:int (host:StarterHost args:StarterArgs) {
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        if (args.has("json")) {
+            def root:JsonValue (JsonValue.newArray())
+            for targets.list t:StarterTarget i {
+                def entry:JsonValue (JsonValue.newObject())
+                entry.putKey("id" (JsonValue.fromText(t.id)))
+                entry.putKey("name" (JsonValue.fromText(t.name)))
+                entry.putKey("tier" (JsonValue.fromText(t.tier)))
+                entry.putKey("ext" (JsonValue.fromText(t.ext)))
+                entry.putKey("packaging" (JsonValue.fromText(t.packaging)))
+                entry.putKey("variantOf" (JsonValue.fromText(t.variantOf)))
+                root.addItem(entry)
+            }
+            def wrapper:JsonValue (JsonValue.newObject())
+            wrapper.putKey("source" (JsonValue.fromText(targets.source)))
+            wrapper.putKey("targets" root)
+            print (wrapper.asText())
+            return 0
+        }
+        print ((StarterText.padRight("TARGET" 12)) + (StarterText.padRight("EXT" 6)) + (StarterText.padRight("TIER" 14)) + "PACKAGING")
+        for targets.list t:StarterTarget i {
+            def packaging:string t.packaging
+            if ((strlen packaging) == 0) {
+                packaging = "-"
+            }
+            def label:string t.id
+            if (t.isVariant()) {
+                label = (t.id + "*")
+            }
+            print ((StarterText.padRight(label 12)) + (StarterText.padRight(t.ext 6)) + (StarterText.padRight(t.tier 14)) + packaging)
+        }
+        print ""
+        print ("source: " + targets.source)
+        if (targets.source == "bundled") {
+            print "`rgrc -targets -json` was not available, so this is the bundled table."
+        }
+        print "* not a -l= value: a variant compiled with an extra flag."
+        return 0
+    }
+
+    sfn usage:void () {
+        print "ranger-starter -- configure and generate a Ranger project"
+        print ""
+        print "  init       --name <n> [--kind application|library] [--surfaces a,b]"
+        print "             [--targets t1,t2] [--devices d1,d2] [--docs] [--strict-docs]"
+        print "             [--agents generic|claude|both] [--apply]"
+        print "  configure  change an existing configuration (wizard: M7)"
+        print "  plan       what apply would do; writes nothing. --json for the plan as data"
+        print "  apply      write it. --no-install to skip npm install, --dry-run to pretend"
+        print "  doctor     can this machine build what is configured?"
+        print "  targets    what the installed compiler supports. --json for data"
+        print ""
+        print "  --config <path>   a configuration other than ranger.project.json"
+        print ""
+        print "`ranger.project.json` is the source of truth. An agent should edit it and run"
+        print "`plan` then `apply`; there is no questionnaire to answer."
+    }
+
+    sfn m@(main):void () {
+        def args:StarterArgs (StarterArgs.read())
+        if ((strlen args.problem) > 0) {
+            print ("ranger-starter: " + args.problem)
+            StarterMain.usage()
+            starter_exit_code 2
+            return
+        }
+        def host (new StarterHost())
+        if (args.has("dry-run")) {
+            host.dryRun = true
+        }
+
+        def status:int 0
+        switch args.command {
+            case "plan" {
+                status = (StarterMain.commandPlan(host args))
+            }
+            case "apply" {
+                status = (StarterMain.commandApply(host args))
+            }
+            case "init" {
+                status = (StarterMain.commandInit(host args))
+            }
+            case "configure" {
+                status = (StarterMain.commandConfigure(host args))
+            }
+            case "doctor" {
+                status = (StarterMain.commandDoctor(host args))
+            }
+            case "targets" {
+                status = (StarterMain.commandTargets(host args))
+            }
+            case "help" {
+                StarterMain.usage()
+            }
+            case "" {
+                StarterMain.usage()
+                status = 2
+            }
+            default {
+                print ("ranger-starter: `" + args.command + "` is not a command.")
+                StarterMain.usage()
+                status = 2
+            }
+        }
+        starter_exit_code status
+    }
+}

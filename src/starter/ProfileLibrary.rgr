@@ -1,0 +1,188 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileLibrary -- a package for each ecosystem that has one.
+;
+; A library has no entry point and no `main`: it has an exported surface, and what
+; each ecosystem wants beside the source is a manifest. The compiler writes those
+; manifests itself -- `-apipackage` knows about `package.json`, `pyproject.toml`,
+; `build.gradle.kts`, `Package.swift`, a `.csproj` with `docfx.json`, and
+; `pubspec.yaml` -- so this profile's job is to choose the right flags per target
+; and wire the scripts, not to write manifests by hand.
+;
+; A target with NO packaging of its own (Go, Rust, C++, Java, Scala, PHP) still
+; gets a build script. What to do with the emitted source is that ecosystem's
+; business; pretending to generate a Cargo workspace or a Maven POM from here
+; would be generating something nobody asked for.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileLibrary extends StarterProfile {
+
+    Constructor () {
+        id = "library"
+    }
+
+    fn defaultTarget:string () {
+        return "es6"
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+        def chosen:[string] (cfg.targetsOf(id))
+        for chosen t:string i {
+            if (t == "llvm") {
+                plan.addProblem((StarterProblem.warn("surfaces.library.targets" "llvm is an intermediate representation, not a library other code links against by name. It will be emitted, and no manifest will be written for it.")))
+            }
+        }
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        def className:string (StarterText.pascalCase((cfg.projectName())))
+        return ("src/" + className + ".rgr")
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((cfg.projectName())))
+        def name:string (cfg.projectName())
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+        plan.addFile((PlanFile.seed(entry (StarterTemplates.mainSeed(name className)) id)))
+        def testPath:string ("src/" + className + "Test.rgr")
+        plan.addFile((PlanFile.seed(testPath (StarterTemplates.testSeed(name className (className + ".rgr"))) id)))
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((cfg.projectName())))
+        def testPath:string ("src/" + className + "Test.rgr")
+
+        plan.addScript((PlanScript.entry("check" ("node scripts/rgr.js check " + entry) id)))
+        plan.addScript((PlanScript.entry("test" ("node scripts/rgr.js run " + testPath) id)))
+
+        def chosen:[string] (this.myTargets(cfg targets))
+        for chosen t:string i {
+            def flag:string (targets.languageFlagOf(t))
+            def command:string ("node scripts/rgr.js build " + entry + " -l=" + flag)
+            if (t == "typescript") {
+                command = ("node scripts/rgr.js build " + entry + " -l=es6 -- -typescript")
+            }
+            plan.addScript((PlanScript.entry(("build:" + t) command id)))
+
+            ; The manifest each ecosystem expects, beside the source. `-apipackage`
+            ; is what asks the compiler for it; the extra flags are the ones that
+            ; ecosystem cannot do without.
+            def packaging:string (targets.packagingOf(t))
+            if ((strlen packaging) > 0) {
+                def extra:string (ProfileLibrary.packagingFlags(t cfg))
+                def pkgCommand:string ("node scripts/rgr.js build " + entry + " -l=" + flag + " -d=build/pkg/" + t + " -- -apipackage" + extra)
+                plan.addScript((PlanScript.entry(("package:" + t) pkgCommand id)))
+            }
+        }
+    }
+
+    ; The flags an ecosystem's manifest cannot be written without. A Kotlin
+    ; package needs its package name or nothing resolves; a Dart pubspec is
+    ; rejected without a name, a version and a description.
+    sfn packagingFlags:string (target:string cfg:StarterConfig) {
+        def className:string (StarterText.pascalCase((cfg.projectName())))
+        switch target {
+            case "kotlin" {
+                return (" -ktpackage=" + (StarterConfig.reverseDomain((cfg.projectName()))))
+            }
+            case "csharp" {
+                return (" -csnamespace=" + className)
+            }
+            case "dart" {
+                return (" -pubspec -name=" + (cfg.projectName()) + " -version=0.1.0 -description=\"" + (cfg.projectName()) + "\"")
+            }
+            case "es6" {
+                return " -npm -esm"
+            }
+            case "typescript" {
+                return " -npm -esm -typescript"
+            }
+        }
+        return ""
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def chosen:[string] (this.myTargets(cfg targets))
+        def packaged:[string]
+        def sourceOnly:[string]
+        for chosen t:string i {
+            if ((strlen (targets.packagingOf(t))) > 0) {
+                push packaged t
+            } {
+                push sourceOnly t
+            }
+        }
+
+        def l:[string]
+        push l "## Library"
+        push l ""
+        push l ("Public surface: `" + entry + "`. Targets: " + (StarterText.joinWith(chosen ", ")) + ".")
+        push l ""
+        push l "`npm run build:<target>` writes the source. `npm run package:<target>` writes"
+        push l "the source AND the manifest that ecosystem expects, into `build/pkg/<target>`."
+        push l "The compiler writes those manifests; nothing here does it by hand."
+        if ((array_length packaged) > 0) {
+            push l ""
+            push l ("With a manifest: " + (StarterText.joinWith(packaged ", ")) + ".")
+        }
+        if ((array_length sourceOnly) > 0) {
+            push l ""
+            push l ("Source only -- what to do with it is that ecosystem's business: " + (StarterText.joinWith(sourceOnly ", ")) + ".")
+        }
+        push l ""
+        push l "Everything under `build/` is generated. Do not edit it, and do not commit it."
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-library" 310 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def chosen:[string] (this.myTargets(cfg targets))
+        for chosen t:string i {
+            def packaging:string (targets.packagingOf(t))
+            if ((strlen packaging) == 0) {
+                continue
+            }
+            def program:string (ProfileLibrary.publisherFor(packaging))
+            if ((strlen program) == 0) {
+                continue
+            }
+            def check:PlanCheck (PlanCheck.tool("Library" (packaging + " packaging") program ("Needed to publish the " + t + " package. Writing the manifest does not need it.")))
+            check.optional = true
+            plan.addCheck(check)
+        }
+    }
+
+    sfn publisherFor:string (packaging:string) {
+        switch packaging {
+            case "npm" {
+                return "npm"
+            }
+            case "pip" {
+                return "python3"
+            }
+            case "nuget" {
+                return "dotnet"
+            }
+            case "gradle" {
+                return "gradle"
+            }
+            case "swiftpm" {
+                return "swift"
+            }
+            case "pub" {
+                return "dart"
+            }
+        }
+        return ""
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-start")
+    }
+}

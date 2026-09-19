@@ -1,0 +1,401 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterHost -- the only file in the starter that touches the world.
+;
+; Everything else -- the configuration, the planner, the profiles, the generator,
+; the merges -- is a function from values to values. This is the boundary: read a
+; file, write a file, make a directory, delete a file, run a program, print a
+; line. Nothing here decides anything.
+;
+; That split is what the tests are built on. `DiskState` is a snapshot this file
+; fills from a real filesystem and a test fills from a literal, and neither the
+; generator nor the tests can tell which.
+;
+; ONE OPERATOR IS DECLARED HERE, because the language does not have it: there is
+; no way to delete a file. `lib/ranger-dir.rgr` in the Ranger repository has an
+; es6-only `remove_file`, but this project has no dependencies and intends to
+; keep it that way, and a removal that silently does nothing on Python or Go
+; would make "turn a surface off" a quiet no-op there. So it is declared for the
+; three targets the starter is tested on, and refuses loudly elsewhere rather
+; than pretending.
+
+operators {
+
+    ; Read a file synchronously, answering "" when it is not there.
+    ;
+    ; WHY NOT `read_file`. It is declared `@(optional async)`, so on es6 it awaits
+    ; `fs.readFile` and every function on the path to it becomes async -- all the
+    ; way up through `apply` and `main`. `read_file_sync` does exist, and is what
+    ; this should use, but it POSTDATES ranger-compiler 3.5.1, which is what `npm
+    ; install` resolves today. Rather than make the host async for a compiler
+    ; version's sake, the synchronous read is declared here for the three targets
+    ; this is tested on.
+    ;
+    ; It answers "" rather than an optional because the one thing a caller needs
+    ; to tell apart -- absent from empty -- is answered by `file_exists`, and an
+    ; operator that returns an optional needs a target-specific nullable
+    ; representation in each template.
+    ;
+    ; Delete this and use `read_file_sync` once the minimum compiler has it.
+    starter_read_file _:string (path:string name:string) {
+        templates {
+            ; An ARROW function, not `function(){}`. The arguments are expressions
+            ; from the call site, and on es6 they are frequently `this.something()`
+            ; -- a `function` expression rebinds `this`, so the read threw, the
+            ; catch swallowed it, and every file came back empty.
+            es6 ('(() => { try { return (require("fs")).readFileSync(' (e 1) ' + "/" + ' (e 2) ', "utf8"); } catch (e) { return ""; } })()')
+            python ('rg_starter_read(' (e 1) ', ' (e 2) ')' (imp "os")
+(create_polyfill "
+def rg_starter_read(path, name):
+    try:
+        with open(os.path.join(path, name), 'r', encoding='utf-8') as fh:
+            return fh.read()
+    except OSError:
+        return ''
+")
+            )
+            go ('r_starter_read(' (e 1) ', ' (e 2) ')' (imp "os") (imp "path/filepath")
+(create_polyfill "
+func r_starter_read(dir string, name string) string {
+    data, err := os.ReadFile(filepath.Join(dir, name))
+    if err != nil {
+        return \"\"
+    }
+    return string(data)
+}
+")
+            )
+            * ( "\"\"" )
+        }
+    }
+
+    ; Set the status this program ends with, WITHOUT ending it here.
+    ;
+    ; `exit` stops the process at once, and on node a stdout that is a pipe -- CI,
+    ; a log file, `$(ranger-starter plan)` -- is written asynchronously, so
+    ; whatever was printed last is dropped. That is exactly the report the
+    ; non-zero status is about.
+    ;
+    ; The compiler has `set_exit_code` for this. It POSTDATES ranger-compiler
+    ; 3.5.1, and `main:int` returning a status is ignored on es6 there, so on the
+    ; compiler `npm install` resolves today there is no way to do this correctly
+    ; without declaring it. Templates follow the compiler's own, so deleting this
+    ; and calling `set_exit_code` is a rename.
+    starter_exit_code _:void (code:int) {
+        templates {
+            es6 ( nl "process.exitCode = " (e 1) ";" nl )
+            python ( nl "sys.exit(" (e 1) ")" nl (imp "sys") )
+            go ( nl "os.Exit(int(" (e 1) "))" nl (imp "os") )
+            cpp ( nl "exit(" (e 1) ");" nl (imp "<cstdlib>") )
+            rust ( nl "std::process::exit((" (e 1) ") as i32);" nl )
+            * ( nl "process.exitCode = " (e 1) ";" nl )
+        }
+    }
+
+    starter_remove_file _:void (path:string name:string) {
+        templates {
+            es6 ('(require("fs")).rmSync(' (e 1) ' + "/" + ' (e 2) ', { force: true })')
+            python ('rg_starter_rm(' (e 1) ', ' (e 2) ')' (imp "os")
+(create_polyfill "
+def rg_starter_rm(path, name):
+    try:
+        os.remove(os.path.join(path, name))
+    except OSError:
+        pass
+")
+            )
+            go ('r_starter_rm(' (e 1) ', ' (e 2) ')' (imp "os") (imp "path/filepath")
+(create_polyfill "
+func r_starter_rm(dir string, name string) {
+    _ = os.Remove(filepath.Join(dir, name))
+}
+")
+            )
+            * ( nl "// starter_remove_file: not implemented for this target. Removing a" nl
+                   "// generated file is part of turning a surface off, so this host cannot" nl
+                   "// apply a plan that removes anything." nl )
+        }
+    }
+}
+
+Import "StarterFilePlan.rgr"
+Import "StarterManifest.rgr"
+Import "StarterPlan.rgr"
+Import "StarterText.rgr"
+
+; What applying a plan did, so the caller can report it and set an exit status.
+class ApplyReport {
+
+    def created:int 0
+    def updated:int 0
+    def removed:int 0
+    def unchanged:int 0
+    def kept:int 0
+    def failures:[string]
+    def ran:[string]
+
+    Constructor () {
+    }
+
+    fn ok:boolean () {
+        return ((array_length failures) == 0)
+    }
+
+    fn summary:string () {
+        def parts:[string]
+        if (created > 0) {
+            push parts ((to_string created) + " created")
+        }
+        if (updated > 0) {
+            push parts ((to_string updated) + " updated")
+        }
+        if (removed > 0) {
+            push parts ((to_string removed) + " removed")
+        }
+        if (unchanged > 0) {
+            push parts ((to_string unchanged) + " already correct")
+        }
+        if (kept > 0) {
+            push parts ((to_string kept) + " left alone")
+        }
+        if ((array_length parts) == 0) {
+            return "nothing to do"
+        }
+        return (StarterText.joinWith(parts ", "))
+    }
+}
+
+class StarterHost {
+
+    ; The directory the project lives in, as a prefix. "" means "where this was
+    ; run", which is what every path in a plan is relative to.
+    def root:string ""
+
+    ; Set by `--dry-run`: every write is reported and nothing happens.
+    def dryRun:boolean false
+
+    Constructor () {
+    }
+
+    ; --- paths ----------------------------------------------------------------
+    ;
+    ; `read_file` and `write_file` take a directory and a name, not a path. A path
+    ; with no directory part would become `"" + "/" + name` in several of the
+    ; polyfills, which is an absolute path -- so an empty directory becomes ".".
+
+    fn dirOf:string (path:string) {
+        def dir:string (StarterText.dirName(path))
+        if ((strlen root) > 0) {
+            if ((strlen dir) == 0) {
+                return root
+            }
+            return (root + "/" + dir)
+        }
+        if ((strlen dir) == 0) {
+            return "."
+        }
+        return dir
+    }
+
+    fn nameOf:string (path:string) {
+        return (StarterText.baseName(path))
+    }
+
+    ; --- reading --------------------------------------------------------------
+
+    fn exists:boolean (path:string) {
+        return (file_exists (this.dirOf(path)) (this.nameOf(path)))
+    }
+
+    ; "" for a file that is not there, and "" for a file that is empty. Callers
+    ; that must tell those apart ask `exists` first, which `snapshot` does.
+    fn readText:string (path:string) {
+        return (starter_read_file (this.dirOf(path)) (this.nameOf(path)))
+    }
+
+    fn readTextOr:string (path:string fallback:string) {
+        if ((this.exists(path)) == false) {
+            return fallback
+        }
+        return (this.readText(path))
+    }
+
+    ; --- writing --------------------------------------------------------------
+
+    ; Create every directory a path needs, outermost first. `create_dir` is not
+    ; recursive on every target, so the parents are walked.
+    fn ensureDirs:void (path:string) {
+        def dirs:[string] (StarterText.parentDirs(path))
+        for dirs d:string i {
+            def full:string d
+            if ((strlen root) > 0) {
+                full = (root + "/" + d)
+            }
+            if ((dir_exists full) == false) {
+                create_dir full
+            }
+        }
+    }
+
+    fn writeText:void (path:string text:string) {
+        if dryRun {
+            return
+        }
+        this.ensureDirs(path)
+        write_file (this.dirOf(path)) (this.nameOf(path)) text
+    }
+
+    fn removeFile:void (path:string) {
+        if dryRun {
+            return
+        }
+        starter_remove_file (this.dirOf(path)) (this.nameOf(path))
+    }
+
+    ; --- the snapshot the generator decides against ---------------------------
+    ;
+    ; Only the paths the plan mentions are read, plus every path the manifest
+    ; records -- the second is what makes a removal possible, because a file the
+    ; configuration no longer asks for is by definition not in the plan.
+    fn snapshot:DiskState (project:ProjectPlan) {
+        def disk (new DiskState())
+        def manifestText:string (this.readTextOr((StarterManifest.path()) ""))
+        disk.manifest = (StarterManifest.load(manifestText))
+
+        def planned:[PlanFile] (project.filesByPath())
+        for planned f:PlanFile i {
+            if (this.exists(f.path)) {
+                disk.put(f.path (this.readTextOr(f.path "")))
+            }
+        }
+        def recorded:[string] (disk.manifest.recordedPaths())
+        for recorded p:string i {
+            if (disk.hasFile(p)) {
+                continue
+            }
+            if (this.exists(p)) {
+                disk.put(p (this.readTextOr(p "")))
+            }
+        }
+        return disk
+    }
+
+    ; --- applying -------------------------------------------------------------
+
+    ; Perform the plan. The action list is the same one `plan` printed, walked in
+    ; the same order, which is the point: there is no second implementation of the
+    ; decisions here to disagree with the first.
+    fn apply:ApplyReport (filePlan:FilePlan runCommands:boolean) {
+        def report (new ApplyReport())
+        for filePlan.actions a:FileAction i {
+            switch a.kind {
+                case "create" {
+                    this.writeText(a.path a.contents)
+                    report.created = report.created + 1
+                }
+                case "update" {
+                    this.writeText(a.path a.contents)
+                    report.updated = report.updated + 1
+                }
+                case "merge" {
+                    this.writeText(a.path a.contents)
+                    report.updated = report.updated + 1
+                }
+                case "remove" {
+                    this.removeFile(a.path)
+                    report.removed = report.removed + 1
+                }
+                case "unchanged" {
+                    report.unchanged = report.unchanged + 1
+                }
+                case "keep" {
+                    report.kept = report.kept + 1
+                }
+                case "orphan" {
+                    report.kept = report.kept + 1
+                }
+                case "install" {
+                    ; Recorded in the plan; performed by the `run` action that
+                    ; follows it, so that `--no-install` suppresses one thing
+                    ; rather than several.
+                }
+                case "run" {
+                    if runCommands {
+                        push report.ran a.path
+                    }
+                }
+            }
+        }
+
+        ; The manifest is written LAST and only when the writes succeeded, so an
+        ; interrupted apply leaves a manifest that under-claims rather than one
+        ; that claims files it never wrote. Under-claiming is recoverable: the
+        ; next run treats those files as foreign and says so. Over-claiming would
+        ; let the next run delete somebody's file.
+        def normalized:StarterManifest (filePlan.manifest.normalized())
+        this.writeText((StarterManifest.path()) (normalized.asText()))
+        return report
+    }
+
+    ; Run one command, streaming its output. Used for `npm install`.
+    fn runCommand:boolean (command:PlanCommand) {
+        if dryRun {
+            print ("  would run: " + (command.commandLine()))
+            return true
+        }
+        def cwd:string root
+        if ((strlen cwd) == 0) {
+            cwd = "."
+        }
+        ; `env` is extra entries as `NAME=value` STRINGS, not a map: an empty list
+        ; means "inherit this process's environment".
+        def env:[string]
+        ; Three strings: the exit code, stdout, stderr. `capture` is false so the
+        ; program's output goes straight to this terminal -- `npm install` has a
+        ; progress display worth seeing.
+        def result:[string] (run_process_result command.program command.args cwd false env)
+        def code:string (itemAt result 0)
+        return (code == "0")
+    }
+
+    ; Run a program and keep its output: the exit code, stdout, stderr.
+    fn capture:[string] (program:string args:[string]) {
+        def cwd:string root
+        if ((strlen cwd) == 0) {
+            cwd = "."
+        }
+        def env:[string]
+        return (run_process_result program args cwd true env)
+    }
+
+    ; Is this program on PATH? Asked by `doctor`, and asked the only way that
+    ; works across platforms without a shell: run it and see whether the process
+    ; started at all.
+    fn hasProgram:boolean (program:string) {
+        def args:[string]
+        push args "--version"
+        def cwd:string root
+        if ((strlen cwd) == 0) {
+            cwd = "."
+        }
+        def env:[string]
+        def result:[string] (run_process_result program args cwd true env)
+        def code:string (itemAt result 0)
+        ; A program that exists and rejects `--version` still answers something
+        ; other than the "could not start" status the runtime reports.
+        if (code == "0") {
+            return true
+        }
+        def err:string (itemAt result 2)
+        if (contains err "ENOENT") {
+            return false
+        }
+        if (contains err "not found") {
+            return false
+        }
+        if (code == "127") {
+            return false
+        }
+        return true
+    }
+}

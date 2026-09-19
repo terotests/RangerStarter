@@ -46,6 +46,61 @@ Every `npm` script in `package.json` goes through it.
 | `npm run package` | the manifest each target ecosystem expects, into `build/pkg/` |
 | `npm run gallery` | what can be added from the Ranger gallery, and what that costs |
 
+## The configurator: `src/starter/`
+
+This repository is becoming the **project configurator** for Ranger, written in
+Ranger. [PLAN_STARTER.md](PLAN_STARTER.md) is the design; what exists today is
+the engine, not the questionnaire.
+
+```
+ranger.project.json  ->  StarterConfig  ->  ProjectPlan  ->  FilePlan  ->  disk
+   (the intent)           (a view over        (pure)        (pure)       (the host)
+                           the JSON tree)
+```
+
+Everything left of the last arrow is pure -- no filesystem, no terminal, no
+process -- which is why `npm run starter:test` runs 140 checks over plans and
+merges without touching a disk, and why it runs on **three targets**:
+
+```bash
+npm run starter:test           # es6
+npm run starter:test:python
+npm run starter:test:go
+npm run starter:targets        # compiles the core to every target
+```
+
+| | |
+| --- | --- |
+| `npm run starter:build` | compile the CLI to `bin/StarterMain.js` (`npm install` does this) |
+| `npm run starter:dump` | print a plan for a configuration built in code |
+| `node bin/ranger-starter.js help` | the commands |
+
+Driving it without a questionnaire, which is what an agent should do:
+
+```bash
+node bin/ranger-starter.js init --name demo --surfaces cli --targets es6,go --docs
+node bin/ranger-starter.js plan      # what would change; writes nothing
+node bin/ranger-starter.js apply
+```
+
+Three things to know before changing any of it:
+
+- **`src/starter/` is flat on purpose.** Profiles use inheritance, and importing
+  one file by two different path spellings (`"X.rgr"` from here, `"../X.rgr"`
+  from a subdirectory) is the documented way to break inherited-method
+  resolution. No subdirectories until that stops being true.
+- **Generation is idempotent, and that is tested.** A generated file is
+  fingerprinted in `.ranger/generated.json`; `package.json` is parsed and merged;
+  README/AGENTS/CLAUDE are written only between `<!-- ranger:start ... -->`
+  markers. Applying twice changes nothing, turning a surface off removes exactly
+  what it added, and a file you have edited is kept and reported rather than
+  overwritten.
+- **Three operators are declared in `StarterHost.rgr`** -- a synchronous file
+  read, a file delete, and setting the exit code -- because the compiler `npm
+  install` resolves (3.5.1) has none of them. Each carries the name of the
+  built-in that replaces it. `StarterText.joinWith` is there for the same reason
+  (`join` on Go was missing its import until Ranger ISSUES.md #88).
+
 ## Syntax rules that fail somewhere other than the mistake
 
 - **A returned call may need its own parentheses.** `return (fn1(3))`. A dotted

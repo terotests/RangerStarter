@@ -1,0 +1,685 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterTest -- the starter's own test. `npm run starter:test`.
+;
+; Everything here runs without a filesystem, a terminal or a process, because
+; everything it tests is pure. That is the point of the architecture and this is
+; where the claim is cashed: a configuration goes in, a plan comes out, and the
+; plan is compared against text.
+;
+; Run it on more than one target when changing anything in the core -- the core
+; is meant to compile to all fourteen, and the two targets that disagree first
+; are Python (prints 7.0) and Go (strict number parsing):
+;
+;   scripts/rgr run src/starter/StarterTest.rgr
+;   scripts/rgr run src/starter/StarterTest.rgr -l=python
+;   scripts/rgr run src/starter/StarterTest.rgr -l=go
+
+Import "StarterConfig.rgr"
+Import "StarterTargets.rgr"
+Import "StarterText.rgr"
+Import "StarterPlanner.rgr"
+Import "StarterGenerator.rgr"
+
+class StarterCheck {
+
+    def failures:int 0
+    def checks:int 0
+    def verbose:boolean false
+
+    Constructor () {
+    }
+
+    fn eqStr:void (label:string got:string want:string) {
+        checks = checks + 1
+        if (got == want) {
+            if verbose {
+                print ("  ok   " + label)
+            }
+            return
+        }
+        failures = failures + 1
+        print ("  FAIL " + label)
+        print ("    got:  " + got)
+        print ("    want: " + want)
+    }
+
+    fn eqInt:void (label:string got:int want:int) {
+        this.eqStr(label (to_string got) (to_string want))
+    }
+
+    fn isTrue:void (label:string got:boolean) {
+        def gotText:string "false"
+        if got {
+            gotText = "true"
+        }
+        this.eqStr(label gotText "true")
+    }
+
+    fn isFalse:void (label:string got:boolean) {
+        def gotText:string "false"
+        if got {
+            gotText = "true"
+        }
+        this.eqStr(label gotText "false")
+    }
+
+    ; A list is compared against a comma-separated spelling of it. Ranger's
+    ; typed array literal needs a group -- `([] _:string ( "a" "b" ))` -- and a
+    ; test reads better with the expectation written as text anyway.
+    fn eqList:void (label:string got:[string] want:string) {
+        this.eqStr(label (StarterText.joinWith(got ",")) want)
+    }
+
+    fn report:void (name:string) {
+        if (failures > 0) {
+            print ((((to_string failures) + " of ") + (to_string checks)) + " checks failed in " + name)
+            exit 1
+        }
+        print ((to_string checks) + " checks passed in " + name)
+    }
+}
+
+class StarterTest {
+
+    Constructor () {
+    }
+
+    ; --- JSON -----------------------------------------------------------------
+
+    sfn testJsonRoundTrip:void (t:StarterCheck) {
+        ; The keys are deliberately not alphabetical: what comes back out must be
+        ; what went in, because that is what keeps a merged package.json from
+        ; showing as a whole-file diff.
+        def src:string "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"scripts\": {\n    \"test\": \"node t.js\"\n  },\n  \"keywords\": [],\n  \"weird\": null,\n  \"count\": 3\n}\n"
+        def p (new StarterJson())
+        def v:JsonValue (p.parse(src))
+        t.isTrue("a package.json parses" (p.ok()))
+        t.eqStr("and writes back byte-identical" (v.asText()) src)
+    }
+
+    sfn testUnknownKeysSurvive:void (t:StarterCheck) {
+        def src:string "{\"known\":1,\"somethingNobodyHasHeardOf\":{\"deep\":[1,2]}}"
+        def p (new StarterJson())
+        def v:JsonValue (p.parse(src))
+        t.isTrue("parses" (p.ok()))
+        v.putKey("known" (JsonValue.fromInt(2)))
+        def again:string (v.asText())
+        def p2 (new StarterJson())
+        def v2:JsonValue (p2.parse(again))
+        t.eqInt("the changed key changed" (v2.getInt("known" 0)) 2)
+        def deep:JsonValue (v2.getObject("somethingNobodyHasHeardOf"))
+        def arr:JsonValue (deep.getArray("deep"))
+        t.eqInt("and the unknown subtree survived" (arr.itemCount()) 2)
+        t.eqStr("in place" (StarterText.joinWith(v2.order ",")) (StarterText.joinWith(v.order ",")))
+    }
+
+    sfn testJsonEscapes:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def v:JsonValue (p.parse("{\"s\":\"a\\\"b\\\\c\\nd\\tE\\u00e4\"}"))
+        t.isTrue("escapes parse" (p.ok()))
+        def got:string (v.getText("s" ""))
+        t.eqInt("the decoded string has the right length" (strlen got) 10)
+        ; Re-quoting must produce something that parses back to the same value:
+        ; the round trip is the property, not one particular spelling.
+        def p2 (new StarterJson())
+        def v2:JsonValue (p2.parse((v.asText())))
+        t.isTrue("and re-parse" (p2.ok()))
+        t.eqStr("round-trips" (v2.getText("s" "")) got)
+    }
+
+    sfn testJsonErrors:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def ignored:JsonValue (p.parse("{\"a\":1,}"))
+        t.isFalse("a trailing comma is rejected" (p.ok()))
+        t.eqStr("and named" (substring p.problem 0 28) "trailing comma in an object ")
+
+        def p2 (new StarterJson())
+        def ignored2:JsonValue (p2.parse("{\"a\":1"))
+        t.isFalse("an unclosed object is rejected" (p2.ok()))
+
+        def p3 (new StarterJson())
+        def ignored3:JsonValue (p3.parse("[1,2] junk"))
+        t.isFalse("trailing junk is rejected" (p3.ok()))
+    }
+
+    sfn testJsonNumbers:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def v:JsonValue (p.parse("{\"i\":42,\"neg\":-7,\"d\":1.5}"))
+        t.isTrue("numbers parse" (p.ok()))
+        t.eqInt("an integer reads as one" (v.getInt("i" 0)) 42)
+        t.eqInt("a negative integer too" (v.getInt("neg" 0)) -7)
+        ; An integer must not print as 7.0 on Python, or the same configuration
+        ; produces two different files depending on the target that wrote it.
+        def ints:JsonValue (JsonValue.newObject())
+        ints.putKey("schema" (JsonValue.fromInt(1)))
+        t.eqStr("an integer writes without a decimal point" (ints.asText()) "{\n  \"schema\": 1\n}\n")
+    }
+
+    ; --- the configuration ----------------------------------------------------
+
+    sfn testDefaults:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        t.eqInt("the schema version is written" (cfg.schemaVersion()) 1)
+        t.eqStr("the name" (cfg.projectName()) "northwind")
+        t.eqStr("the kind" (cfg.projectKind()) "application")
+        t.eqStr("the license" (cfg.licenseId()) "MIT")
+        t.eqInt("nothing is enabled yet" (array_length (cfg.enabledSurfaceIds())) 0)
+        ; Every surface is present and off, so the file is a menu.
+        def ids:[string] (StarterConfig.surfaceIds())
+        def surfaces:JsonValue (cfg.surfaces())
+        t.eqStr("every surface is in the file, in canonical order" (StarterText.joinWith(surfaces.order ",")) (StarterText.joinWith(ids ",")))
+    }
+
+    sfn testReverseDomain:void (t:StarterCheck) {
+        t.eqStr("a plain name" (StarterConfig.reverseDomain("northwind")) "com.example.northwind")
+        t.eqStr("punctuation is dropped" (StarterConfig.reverseDomain("my-app_2")) "com.example.myapp2")
+        t.eqStr("capitals are folded" (StarterConfig.reverseDomain("MyApp")) "com.example.myapp")
+        t.eqStr("a leading digit gets a letter" (StarterConfig.reverseDomain("2fast")) "com.example.a2fast")
+        t.eqStr("an empty name still answers something legal" (StarterConfig.reverseDomain("---")) "com.example.app")
+    }
+
+    sfn testSurfaceReads:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("cli" true)
+        def cliTargets:[string]
+        push cliTargets "es6"
+        push cliTargets "go"
+        cfg.setTargets("cli" cliTargets)
+        cfg.setEnabled("android" true)
+        def androidTargets:[string]
+        push androidTargets "kotlin"
+        cfg.setTargets("android" androidTargets)
+        def devices:[string]
+        push devices "phone"
+        push devices "tablet"
+        cfg.setDevices("android" devices)
+
+        t.eqList("enabled surfaces come back in canonical order" (cfg.enabledSurfaceIds()) "cli,android")
+        t.eqList("a multi-target surface" (cfg.targetsOf("cli")) "es6,go")
+        t.eqList("a single-target surface answers a one-element list" (cfg.targetsOf("android")) "kotlin")
+        t.eqList("devices" (cfg.devicesOf("android")) "phone,tablet")
+        t.eqStr("the android package was guessed from the name" (cfg.optionOf("android" "package" "")) "com.example.northwind")
+        t.eqList("every target asked for" (cfg.allTargetIds()) "es6,go,kotlin")
+        t.isFalse("a surface nobody enabled" (cfg.isEnabled("ios")))
+    }
+
+    sfn testConfigRoundTrip:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        cfg.setDocs(true true false)
+        def text:string (cfg.asText())
+        def load:StarterConfigLoad (StarterConfig.load(text))
+        t.isTrue("a written configuration loads" load.ok)
+        def again:StarterConfig load.config
+        t.eqStr("and writes identically" (again.asText()) text)
+        t.isTrue("with its answers" (again.isEnabled("web")))
+        t.isTrue("and its documentation setting" (again.docsApi()))
+    }
+
+    sfn testConfigLoadErrors:void (t:StarterCheck) {
+        def load:StarterConfigLoad (StarterConfig.load("{\"name\":\"x\",}"))
+        t.isFalse("a malformed file does not load" load.ok)
+        t.isTrue("and says why" ((strlen load.problem) > 0))
+
+        def load2:StarterConfigLoad (StarterConfig.load("[]"))
+        t.isFalse("a JSON array is not a project file" load2.ok)
+
+        ; A file missing everything still loads: validation reports what is
+        ; missing, so the wizard can open a half-written file and fix it.
+        def load3:StarterConfigLoad (StarterConfig.load("{}"))
+        t.isTrue("an empty object loads" load3.ok)
+        def empty:StarterConfig load3.config
+        t.eqStr("and reads as unnamed" (empty.projectName()) "")
+    }
+
+    ; --- the target table -----------------------------------------------------
+
+    sfn testTargets:void (t:StarterCheck) {
+        def ts:StarterTargets (StarterTargets.bundled())
+        t.eqStr("the bundled table says so" ts.source "bundled")
+        t.eqInt("fourteen targets and one variant" (array_length ts.list) 15)
+        t.eqStr("es6 is the reference target" (ts.extensionOf("es6")) "js")
+        t.eqStr("typescript is a variant of es6" (ts.languageFlagOf("typescript")) "es6")
+        t.eqStr("and not a language of its own" (ts.languageFlagOf("go")) "go")
+        t.eqStr("kotlin packages with gradle" (ts.packagingOf("kotlin")) "gradle")
+        t.eqStr("go has no manifest of its own" (ts.packagingOf("go")) "")
+        t.isFalse("a target that does not exist" (ts.isKnown("cobol")))
+
+        ; The order a set of targets is planned in belongs to the table, so two
+        ; authors who picked the same targets get the same project.
+        def picked:[string]
+        push picked "python"
+        push picked "es6"
+        push picked "kotlin"
+        t.eqList("targets sort into table order" (ts.inTableOrder(picked)) "es6,kotlin,python")
+    }
+
+    sfn testTargetsFromCompiler:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def root:JsonValue (p.parse("[{\"id\":\"es6\",\"name\":\"JavaScript\"},{\"id\":\"go\"},{\"id\":\"zig\",\"tier\":\"experimental\"}]"))
+        t.isTrue("the compiler's answer parses" (p.ok()))
+        def ts:StarterTargets (StarterTargets.fromJson(root))
+        t.eqStr("and is authoritative" ts.source "compiler")
+        t.isTrue("a target only the compiler knows about is offered" (ts.isKnown("zig")))
+        t.isFalse("and one it no longer has is not" (ts.isKnown("scala")))
+        t.eqStr("what it did not say is filled in from the bundled table" (ts.extensionOf("go")) "go")
+        t.isTrue("the typescript variant survives, being a flag not a target" (ts.isKnown("typescript")))
+
+        ; An empty or malformed answer must not leave the starter with no targets
+        ; at all -- that would turn a compiler quirk into "this project cannot
+        ; be configured".
+        def p2 (new StarterJson())
+        def notAList:JsonValue (p2.parse("{}"))
+        def fallback:StarterTargets (StarterTargets.fromJson(notAList))
+        t.eqStr("a malformed answer falls back" fallback.source "bundled")
+    }
+
+
+    ; --- the planner and the generator ---------------------------------------
+    ;
+    ; From here down, every test is a configuration going in and a plan coming
+    ; out, with a `DiskState` built in memory. No filesystem is involved, which is
+    ; the property the whole architecture exists to buy.
+
+    sfn bundled:StarterTargets () {
+        return (StarterTargets.bundled())
+    }
+
+    sfn cliConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("cli" true)
+        def ts:[string]
+        push ts "es6"
+        push ts "go"
+        cfg.setTargets("cli" ts)
+        cfg.setAgents(true true "auto")
+        cfg.setDocs(true true false)
+        return cfg
+    }
+
+    sfn planFor:FilePlan (cfg:StarterConfig disk:DiskState) {
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled())))
+        return (StarterGenerator.plan(project disk))
+    }
+
+    sfn projectFor:ProjectPlan (cfg:StarterConfig) {
+        return (StarterPlanner.plan(cfg (StarterTest.bundled())))
+    }
+
+    ; The golden plan. It is written out in full, deliberately: this is the shape
+    ; of a generated project, and a change to it should be a change somebody chose
+    ; and can read in a diff.
+    sfn testPlanGolden:void (t:StarterCheck) {
+        def disk (new DiskState())
+        def filePlan:FilePlan (StarterTest.planFor((StarterTest.cliConfig()) disk))
+        def want:[string]
+        push want "create    .gitignore"
+        push want "create    AGENTS.md"
+        push want "create    CLAUDE.md"
+        push want "create    README.md"
+        push want "create    package.json"
+        push want "create    ranger.json"
+        push want "create    scripts/rgr.js"
+        push want "create    src/Main.rgr                       a starting point; yours once it is written"
+        push want "create    src/MainTest.rgr                   a starting point; yours once it is written"
+        t.eqStr("the plan for an empty directory" (filePlan.asText()) ((StarterText.joinWith(want "\n")) + "\n"))
+        t.eqStr("and nothing to complain about" (filePlan.problemsText()) "")
+        t.eqStr("summary" (filePlan.summary()) "9 to create")
+        t.isFalse("a plan that creates nine files is not a no-op" (filePlan.isNoOp()))
+    }
+
+    ; The M2 property: applying twice changes nothing the second time.
+    sfn testIdempotent:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def empty (new DiskState())
+        def first:FilePlan (StarterTest.planFor(cfg empty))
+        def after:DiskState (first.applyToState(empty))
+        def second:FilePlan (StarterTest.planFor(cfg after))
+        t.isTrue("applying a second time writes nothing" (second.isNoOp()))
+        t.eqInt("nothing is created" (second.countOf("create")) 0)
+        t.eqInt("nothing is updated" (second.countOf("update")) 0)
+        t.eqInt("nothing is merged" (second.countOf("merge")) 0)
+        t.eqInt("nothing is removed" (second.countOf("remove")) 0)
+        ; And a third time, because a mechanism that settles after two passes but
+        ; not after one is a mechanism that has not settled.
+        def afterSecond:DiskState (second.applyToState(after))
+        def third:FilePlan (StarterTest.planFor(cfg afterSecond))
+        t.isTrue("and a third time" (third.isNoOp()))
+        t.eqStr("the manifest is stable too" (afterSecond.manifest.asText()) (after.manifest.asText()))
+    }
+
+    ; Turning a surface off removes what it contributed, and only that.
+    sfn testSurfaceRemoval:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("library" true)
+        def libTargets:[string]
+        push libTargets "python"
+        cfg.setTargets("library" libTargets)
+
+        def empty (new DiskState())
+        def withLib:FilePlan (StarterTest.planFor(cfg empty))
+        def onDisk:DiskState (withLib.applyToState(empty))
+        t.isTrue("the library surface wrote its own entry point" (onDisk.hasFile("src/Northwind.rgr")))
+
+        ; The library seed is a seed: it exists now, so the second plan keeps it
+        ; rather than rewriting it. Removal has to work on a file in that state.
+        cfg.setEnabled("library" false)
+        def without:FilePlan (StarterTest.planFor(cfg onDisk))
+        def removals:[FileAction] (without.actionsOfKind("remove"))
+        def removedPaths:[string]
+        for removals a:FileAction i {
+            push removedPaths a.path
+        }
+        t.eqList("its files are removed" (StarterText.sorted(removedPaths)) "src/Northwind.rgr,src/NorthwindTest.rgr")
+
+        def afterRemoval:DiskState (without.applyToState(onDisk))
+        t.isFalse("and are gone" (afterRemoval.hasFile("src/Northwind.rgr")))
+        t.isTrue("while the cli surface keeps its own" (afterRemoval.hasFile("src/Main.rgr")))
+        t.isTrue("and package.json is still there" (afterRemoval.hasFile("package.json")))
+
+        ; The scripts the library surface added are gone from package.json, and the
+        ; ones the CLI surface added are not.
+        def pkg:string (afterRemoval.textOf("package.json"))
+        t.isFalse("its package script is gone" (contains pkg "package:python"))
+        t.isTrue("the cli scripts remain" (contains pkg "\"start\""))
+
+        ; And the round trip is clean: removing a surface leaves the project the
+        ; way it was before the surface was added.
+        def plain:StarterConfig (StarterTest.cliConfig())
+        def fresh (new DiskState())
+        def reference:FilePlan (StarterTest.planFor(plain fresh))
+        def referenceState:DiskState (reference.applyToState(fresh))
+        t.eqStr("package.json matches a project that never had the surface" (afterRemoval.textOf("package.json")) (referenceState.textOf("package.json")))
+        t.eqStr("and so does AGENTS.md" (afterRemoval.textOf("AGENTS.md")) (referenceState.textOf("AGENTS.md")))
+    }
+
+    ; A generated file the author has edited is kept, reported, and not updated.
+    sfn testHandEditedFileIsKept:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def empty (new DiskState())
+        def first:FilePlan (StarterTest.planFor(cfg empty))
+        def onDisk:DiskState (first.applyToState(empty))
+
+        def mine:string ((onDisk.textOf("scripts/rgr.js")) + "\n// my own change\n")
+        onDisk.put("scripts/rgr.js" mine)
+
+        def second:FilePlan (StarterTest.planFor(cfg onDisk))
+        def kept:[FileAction] (second.actionsOfKind("keep"))
+        def keptEdited:boolean false
+        for kept a:FileAction i {
+            if (a.path == "scripts/rgr.js") {
+                keptEdited = true
+                t.eqStr("and says why" a.note "edited since it was generated -- not overwritten")
+            }
+        }
+        t.isTrue("an edited generated file is kept" keptEdited)
+        t.isTrue("and warned about" ((strlen (second.problemsText())) > 0))
+        t.isFalse("a warning is not an error" (second.hasErrors()))
+
+        def after:DiskState (second.applyToState(onDisk))
+        t.eqStr("the edit survives" (after.textOf("scripts/rgr.js")) mine)
+    }
+
+    ; A file that exists and the tool never wrote is not taken over.
+    sfn testForeignFileIsLeftAlone:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def disk (new DiskState())
+        disk.put("scripts/rgr.js" "# somebody else's wrapper\n")
+        def filePlan:FilePlan (StarterTest.planFor(cfg disk))
+        def kept:boolean false
+        for filePlan.actions a:FileAction i {
+            if (a.path == "scripts/rgr.js") {
+                t.eqStr("a pre-existing file is kept" a.kind "keep")
+                t.eqStr("and says so" a.note "already exists and was not written by this tool")
+                kept = true
+            }
+        }
+        t.isTrue("the foreign file was seen" kept)
+        def after:DiskState (filePlan.applyToState(disk))
+        t.eqStr("and is untouched" (after.textOf("scripts/rgr.js")) "# somebody else's wrapper\n")
+    }
+
+    ; Somebody else's package.json keeps everything the tool does not set.
+    sfn testPackageJsonMerge:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def disk (new DiskState())
+        def existing:string "{\n  \"name\": \"northwind\",\n  \"workspaces\": [\n    \"packages/*\"\n  ],\n  \"scripts\": {\n    \"lint\": \"echo mine\"\n  }\n}\n"
+        disk.put("package.json" existing)
+        def filePlan:FilePlan (StarterTest.planFor(cfg disk))
+        def after:DiskState (filePlan.applyToState(disk))
+        def merged:string (after.textOf("package.json"))
+        t.isTrue("the author's script survives" (contains merged "\"lint\""))
+        t.isTrue("and a key the tool has never heard of" (contains merged "workspaces"))
+        t.isTrue("the tool's scripts are added" (contains merged "\"start\""))
+        t.isTrue("and the compiler is a devDependency" (contains merged "ranger-compiler"))
+
+        ; `lint` comes first because it was there first: the author's ordering is
+        ; not rearranged.
+        def lintAt:int (indexOf merged "\"lint\"")
+        def startAt:int (indexOf merged "\"start\"")
+        t.isTrue("the author's key keeps its position" (lintAt < startAt))
+    }
+
+    ; Prose outside the markers is preserved; a section the plan drops goes away.
+    sfn testMarkdownMerge:void (t:StarterCheck) {
+        def sections:[PlanSection]
+        push sections (PlanSection.about("AGENTS.md" "one" 100 "First." "core"))
+        push sections (PlanSection.about("AGENTS.md" "two" 200 "Second." "core"))
+        def rendered:string (StarterMarkdown.render(sections))
+        t.isTrue("a rendered file carries the markers" (contains rendered "<!-- ranger:start one -->"))
+
+        def edited:string (rendered + "\n## My own notes\n\nMine.\n")
+        def keepOne:[PlanSection]
+        push keepOne (PlanSection.about("AGENTS.md" "one" 100 "First, changed." "core"))
+        def merged:MarkdownMerge (StarterMarkdown.merge(edited keepOne))
+        t.isTrue("the merge succeeded" (merged.ok()))
+        t.isTrue("the surviving section was rewritten" (contains merged.text "First, changed."))
+        t.isFalse("the dropped section is gone" (contains merged.text "<!-- ranger:start two -->"))
+        t.isFalse("and so is its body" (contains merged.text "Second."))
+        t.isTrue("the author's prose survives" (contains merged.text "## My own notes"))
+        t.eqStr("and the merge says what it did" (merged.summary()) "1 replaced, 1 removed")
+
+        ; Merging the same sections again is a no-op, which is what makes the
+        ; managed file part of the zero-diff property.
+        def again:MarkdownMerge (StarterMarkdown.merge(merged.text keepOne))
+        t.eqStr("merging again changes nothing" again.text merged.text)
+        ; It still reports touching the region -- it rewrote it with the same
+        ; content. Whether a write is needed is the text comparison above, which is
+        ; the one the generator makes.
+        t.eqInt("it touched the one section it was given" (again.touchedCount()) 1)
+    }
+
+    sfn testMarkdownUnterminatedMarker:void (t:StarterCheck) {
+        def sections:[PlanSection]
+        push sections (PlanSection.about("AGENTS.md" "one" 100 "First." "core"))
+        def broken:string "<!-- ranger:start one -->\n\nFirst.\n"
+        def merged:MarkdownMerge (StarterMarkdown.merge(broken sections))
+        t.isFalse("an unclosed marker is refused" (merged.ok()))
+        t.eqStr("and the file is handed back untouched" merged.text broken)
+    }
+
+    ; A surface with no profile is an error, not a silent omission.
+    sfn testMissingProfileIsAnError:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("web" true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isTrue("enabling a surface that is not built yet is an error" (project.hasErrors()))
+        def said:boolean false
+        for project.problems p:StarterProblem i {
+            if (p.path == "surfaces.web") {
+                said = true
+            }
+        }
+        t.isTrue("and it names the surface" said)
+        t.eqInt("no files are planned from a configuration that cannot be met" (array_length project.files) 0)
+    }
+
+    sfn testValidation:void (t:StarterCheck) {
+        def noName:StarterConfig (StarterConfig.defaults("" "application"))
+        noName.setEnabled("cli" true)
+        def p1:ProjectPlan (StarterTest.projectFor(noName))
+        t.isTrue("a project with no name is an error" (p1.hasErrors()))
+
+        def badName:StarterConfig (StarterConfig.defaults("North Wind!" "application"))
+        badName.setEnabled("cli" true)
+        def p2:ProjectPlan (StarterTest.projectFor(badName))
+        t.isTrue("a name npm would reject is an error" (p2.hasErrors()))
+
+        def nothing:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        def p3:ProjectPlan (StarterTest.projectFor(nothing))
+        t.isTrue("no surfaces is an error" (p3.hasErrors()))
+
+        def badKind:StarterConfig (StarterConfig.defaults("northwind" "webapp"))
+        badKind.setEnabled("cli" true)
+        def p4:ProjectPlan (StarterTest.projectFor(badKind))
+        t.isTrue("a kind that is neither application nor library is an error" (p4.hasErrors()))
+
+        def future:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        future.setEnabled("cli" true)
+        future.root.putKey("schema" (JsonValue.fromInt(7)))
+        def p5:ProjectPlan (StarterTest.projectFor(future))
+        t.isTrue("a newer schema is an error, not a guess" (p5.hasErrors()))
+
+        def cliOnlyLlvm:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cliOnlyLlvm.setEnabled("cli" true)
+        def onlyLlvm:[string]
+        push onlyLlvm "llvm"
+        cliOnlyLlvm.setTargets("cli" onlyLlvm)
+        def p6:ProjectPlan (StarterTest.projectFor(cliOnlyLlvm))
+        t.isTrue("llvm alone cannot carry a command line surface" (p6.hasErrors()))
+
+        def unknownTarget:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        unknownTarget.setEnabled("cli" true)
+        def cobol:[string]
+        push cobol "cobol"
+        unknownTarget.setTargets("cli" cobol)
+        def p7:ProjectPlan (StarterTest.projectFor(unknownTarget))
+        t.isTrue("a target the compiler does not have is an error" (p7.hasErrors()))
+    }
+
+    ; The scripts a configuration produces are the visible half of what it means,
+    ; so they get asserted rather than eyeballed.
+    sfn testScripts:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def names:[string]
+        for (project.scriptsByName()) s:PlanScript i {
+            push names s.name
+        }
+        t.eqList("an application on es6 and go, with docs" names "build,build:go,check,docs,docs:check,doctor,plan,setup,start,test")
+
+        def lib:StarterConfig (StarterConfig.defaults("northwind" "library"))
+        lib.setEnabled("library" true)
+        def libTargets:[string]
+        push libTargets "kotlin"
+        push libTargets "typescript"
+        lib.setTargets("library" libTargets)
+        def libPlan:ProjectPlan (StarterTest.projectFor(lib))
+        def libNames:[string]
+        for (libPlan.scriptsByName()) s:PlanScript i {
+            push libNames s.name
+        }
+        t.eqList("a library packages every target that has a manifest" libNames "build:kotlin,build:typescript,check,doctor,package:kotlin,package:typescript,plan,setup,test")
+
+        ; TypeScript is not a `-l=` value. If this ever regresses the generated
+        ; project fails with "Invalid language : typescript".
+        def tsCommand:string ""
+        for (libPlan.scriptsByName()) s:PlanScript i {
+            if (s.name == "build:typescript") {
+                tsCommand = s.command
+            }
+        }
+        t.isTrue("typescript compiles as es6 with a flag" (contains tsCommand "-l=es6 -- -typescript"))
+        t.isTrue("kotlin packaging carries its package name" (contains (StarterTest.commandOf(libPlan "package:kotlin")) "-ktpackage=com.example.northwind"))
+    }
+
+    sfn commandOf:string (project:ProjectPlan name:string) {
+        for (project.scriptsByName()) s:PlanScript i {
+            if (s.name == name) {
+                return s.command
+            }
+        }
+        return ""
+    }
+
+    ; The generated wrapper's target table comes from the target table, so a
+    ; target the compiler adds appears in it without anybody editing a template.
+    sfn testWrapperTableFollowsTargets:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def wrapper@(optional):PlanFile (project.fileAt("scripts/rgr.js"))
+        t.isTrue("the wrapper is planned" ((null? wrapper) == false))
+        if (null? wrapper) {
+            return
+        }
+        def f:PlanFile (unwrap wrapper)
+        t.isTrue("it knows about kotlin" (contains f.contents "kotlin: 'kt',"))
+        t.isTrue("and about llvm" (contains f.contents "llvm: 'll',"))
+        t.isFalse("and not about the typescript variant, which is not a -l= value" (contains f.contents "typescript: "))
+        t.isTrue("it resolves the compiler without npx" (contains f.contents "require.resolve('ranger-compiler/dist/rgrc.js')"))
+    }
+
+    ; A library project's own entry point is derived from the project name, and a
+    ; file name is not a class name.
+    sfn testNaming:void (t:StarterCheck) {
+        t.eqStr("a file stem is not the whole base name" (StarterText.stemName("src/Main.rgr")) "Main")
+        t.eqStr("a dotted directory is not confused for an extension" (StarterText.stemName("a.b/Main.rgr")) "Main")
+        t.eqStr("a name with no extension" (StarterText.stemName("src/Makefile")) "Makefile")
+        t.eqStr("pascal case" (StarterText.pascalCase("my-app_2")) "MyApp2")
+        t.eqStr("already pascal" (StarterText.pascalCase("Northwind")) "Northwind")
+        t.eqStr("a leading digit cannot start a class name" (StarterText.pascalCase("2fast")) "App2fast")
+        ; The bug this caught: pascalCase over the BASE NAME folded the extension
+        ; into the class, and the generated test was `src/MainRgrTest.rgr`.
+        t.eqStr("a class name from a path" (StarterText.pascalCase((StarterText.stemName("src/Main.rgr")))) "Main")
+    }
+
+    sfn testParentDirs:void (t:StarterCheck) {
+        t.eqList("every directory a path needs, outermost first" (StarterText.parentDirs("a/b/c/file.txt")) "a,a/b,a/b/c")
+        t.eqList("a file at the root needs none" (StarterText.parentDirs("file.txt")) "")
+        t.eqStr("dirName" (StarterText.dirName("a/b/c.txt")) "a/b")
+        t.eqStr("dirName of a bare name" (StarterText.dirName("c.txt")) "")
+    }
+
+    sfn testFingerprint:void (t:StarterCheck) {
+        def a:string "hello"
+        def b:string "hello!"
+        t.isTrue("the same text fingerprints the same" (StarterHash.matches(a (StarterHash.of(a)))))
+        t.isFalse("different text does not" (StarterHash.matches(b (StarterHash.of(a)))))
+        ; A transposition is the edit a weak hash misses, so it is the one worth
+        ; asserting.
+        t.isFalse("a transposition is caught" ((StarterHash.of("ab")) == (StarterHash.of("ba"))))
+        t.eqStr("an empty file has a fingerprint too" (StarterHash.of("")) "0-0-0")
+    }
+
+    sfn m@(main):void () {
+        def t (new StarterCheck())
+        print "starter core"
+        StarterTest.testJsonRoundTrip(t)
+        StarterTest.testUnknownKeysSurvive(t)
+        StarterTest.testJsonEscapes(t)
+        StarterTest.testJsonErrors(t)
+        StarterTest.testJsonNumbers(t)
+        StarterTest.testDefaults(t)
+        StarterTest.testReverseDomain(t)
+        StarterTest.testSurfaceReads(t)
+        StarterTest.testConfigRoundTrip(t)
+        StarterTest.testConfigLoadErrors(t)
+        StarterTest.testTargets(t)
+        StarterTest.testTargetsFromCompiler(t)
+        StarterTest.testNaming(t)
+        StarterTest.testParentDirs(t)
+        StarterTest.testFingerprint(t)
+        StarterTest.testValidation(t)
+        StarterTest.testMissingProfileIsAnError(t)
+        StarterTest.testScripts(t)
+        StarterTest.testWrapperTableFollowsTargets(t)
+        StarterTest.testPlanGolden(t)
+        StarterTest.testIdempotent(t)
+        StarterTest.testSurfaceRemoval(t)
+        StarterTest.testHandEditedFileIsKept(t)
+        StarterTest.testForeignFileIsLeftAlone(t)
+        StarterTest.testPackageJsonMerge(t)
+        StarterTest.testMarkdownMerge(t)
+        StarterTest.testMarkdownUnterminatedMarker(t)
+        t.report("the starter core")
+    }
+}

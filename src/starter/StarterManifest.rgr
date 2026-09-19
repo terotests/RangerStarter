@@ -1,0 +1,244 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterManifest -- `.ranger/generated.json`: what the tool wrote last time.
+;
+; This one file is what makes the generator safe to run again, and it replaces
+; three things that would otherwise have to be guessed:
+;
+;   1. WHICH FILES ARE MINE. A path in here with a matching fingerprint is a file
+;      the tool wrote and nobody has edited: it may be rewritten, or removed when
+;      the surface that asked for it is switched off. A path in here whose
+;      fingerprint no longer matches belongs to the author now -- it is reported
+;      and left alone, never clobbered.
+;
+;   2. WHICH package.json KEYS ARE MINE. `web:dev` must disappear when the web
+;      surface is disabled, and the author's `lint` must not. Ownership cannot be
+;      inferred from a script's shape, so it is recorded.
+;
+;   3. WHICH MARKDOWN SECTIONS WERE MINE. The markers already say this inside the
+;      file, so this is belt and braces -- but it lets `plan` predict a removal
+;      before reading the file.
+;
+; It is also the reason the core needs no directory listing: "what is on disk
+; that I put there" is a better question than "what is on disk", and this answers
+; it without an operator Ranger does not have.
+
+Import "StarterJson.rgr"
+Import "StarterHash.rgr"
+Import "StarterText.rgr"
+
+class StarterManifest {
+
+    def root:JsonValue
+
+    Constructor () {
+        root = (JsonValue.newObject())
+        root.putKey("schema" (JsonValue.fromInt(1)))
+        root.putKey("tool" (JsonValue.fromText("ranger-starter")))
+        root.putKey("files" (JsonValue.newObject()))
+        root.putKey("owned" (JsonValue.newObject()))
+        root.putKey("sections" (JsonValue.newObject()))
+    }
+
+    sfn path:string () {
+        return ".ranger/generated.json"
+    }
+
+    ; A missing or unreadable manifest is an EMPTY manifest, not an error. That is
+    ; what makes the first `apply` into an existing repository behave correctly:
+    ; nothing is claimed as the tool's, so nothing is overwritten or removed.
+    sfn load:StarterManifest (text:string) {
+        def m (new StarterManifest())
+        if ((strlen text) == 0) {
+            return m
+        }
+        def parser (new StarterJson())
+        def parsed:JsonValue (parser.parse(text))
+        if ((parser.ok()) == false) {
+            return m
+        }
+        if ((parsed.isObject()) == false) {
+            return m
+        }
+        m.root = parsed
+        ; The containers are materialised so every accessor below can assume they
+        ; are objects.
+        if ((parsed.hasKey("files")) == false) {
+            parsed.putKey("files" (JsonValue.newObject()))
+        }
+        if ((parsed.hasKey("owned")) == false) {
+            parsed.putKey("owned" (JsonValue.newObject()))
+        }
+        if ((parsed.hasKey("sections")) == false) {
+            parsed.putKey("sections" (JsonValue.newObject()))
+        }
+        return m
+    }
+
+    fn asText:string () {
+        return (root.asText())
+    }
+
+    fn files:JsonValue () {
+        return (root.getObject("files"))
+    }
+
+    ; --- files ----------------------------------------------------------------
+
+    fn knows:boolean (path:string) {
+        def f:JsonValue (this.files())
+        return (f.hasKey(path))
+    }
+
+    fn fingerprintOf:string (path:string) {
+        def f:JsonValue (this.files())
+        def entry:JsonValue (f.getObject(path))
+        return (entry.getText("fingerprint" ""))
+    }
+
+    fn profileOf:string (path:string) {
+        def f:JsonValue (this.files())
+        def entry:JsonValue (f.getObject(path))
+        return (entry.getText("profile" ""))
+    }
+
+    fn ownershipOf:string (path:string) {
+        def f:JsonValue (this.files())
+        def entry:JsonValue (f.getObject(path))
+        return (entry.getText("ownership" ""))
+    }
+
+    ; True when the text on disk is exactly what the tool wrote.
+    fn isUntouched:boolean (path:string diskText:string) {
+        if ((this.knows(path)) == false) {
+            return false
+        }
+        return (StarterHash.matches(diskText (this.fingerprintOf(path))))
+    }
+
+    fn recordFile:void (path:string contents:string profile:string ownership:string) {
+        def f:JsonValue (this.files())
+        def entry:JsonValue (JsonValue.newObject())
+        ; ONLY a generated file gets a fingerprint, and that is not an omission.
+        ;
+        ; The fingerprint answers one question -- "may I overwrite or remove this?"
+        ; -- and it is only ever asked about generated files. A structured or
+        ; managed file is merged into, never overwritten, and never removed, so its
+        ; fingerprint is read by nothing.
+        ;
+        ; Recording one anyway had a cost: the moment the author edits their own
+        ; `package.json`, the next apply re-fingerprints it and the MANIFEST
+        ; changes, so `apply` twice in a row is not a no-op until the third time.
+        ; Leaving it out makes "applying again changes nothing" true unconditionally.
+        if (ownership == "generated") {
+            entry.putKey("fingerprint" (JsonValue.fromText((StarterHash.of(contents)))))
+        }
+        entry.putKey("profile" (JsonValue.fromText(profile)))
+        entry.putKey("ownership" (JsonValue.fromText(ownership)))
+        f.putKey(path entry)
+    }
+
+    fn forgetFile:void (path:string) {
+        def f:JsonValue (this.files())
+        f.dropKey(path)
+    }
+
+    ; Every path the tool wrote, sorted, so the manifest -- and anything printed
+    ; from it -- is stable.
+    fn recordedPaths:[string] () {
+        def f:JsonValue (this.files())
+        return (StarterText.sorted(f.order))
+    }
+
+    ; --- owned keys in structured files ---------------------------------------
+
+    fn ownedOf:JsonValue (file:string) {
+        def owned:JsonValue (root.getObject("owned"))
+        return (owned.getObject(file))
+    }
+
+    fn setOwned:void (file:string keys:JsonValue) {
+        def owned@(optional):JsonValue (root.getKey("owned"))
+        def container:JsonValue (JsonValue.newObject())
+        if (null? owned) {
+            root.putKey("owned" container)
+        } {
+            def existing:JsonValue (unwrap owned)
+            if (existing.isObject()) {
+                container = existing
+            } {
+                root.putKey("owned" container)
+            }
+        }
+        container.putKey(file keys)
+    }
+
+    ; --- managed sections -----------------------------------------------------
+
+    fn sectionsOf:[string] (file:string) {
+        def sections:JsonValue (root.getObject("sections"))
+        return (sections.getStrings(file))
+    }
+
+    fn setSections:void (file:string ids:[string]) {
+        def sections@(optional):JsonValue (root.getKey("sections"))
+        def container:JsonValue (JsonValue.newObject())
+        if (null? sections) {
+            root.putKey("sections" container)
+        } {
+            def existing:JsonValue (unwrap sections)
+            if (existing.isObject()) {
+                container = existing
+            } {
+                root.putKey("sections" container)
+            }
+        }
+        container.putKey(file (JsonValue.fromStrings(ids)))
+    }
+
+    ; Sorted, so that two runs which wrote the same files produce the same
+    ; manifest text -- the manifest is itself a file in the repository and must
+    ; not churn.
+    fn normalized:StarterManifest () {
+        def out (new StarterManifest())
+        out.root.putKey("schema" (JsonValue.fromInt(1)))
+        out.root.putKey("tool" (JsonValue.fromText("ranger-starter")))
+
+        def files:JsonValue (JsonValue.newObject())
+        def paths:[string] (this.recordedPaths())
+        def mine:JsonValue (this.files())
+        for paths p:string i {
+            def entry@(optional):JsonValue (mine.getKey(p))
+            if (null? entry) {
+                continue
+            }
+            files.putKey(p (unwrap entry))
+        }
+        out.root.putKey("files" files)
+
+        def owned:JsonValue (JsonValue.newObject())
+        def ownedIn:JsonValue (root.getObject("owned"))
+        def ownedKeys:[string] (StarterText.sorted(ownedIn.order))
+        for ownedKeys k:string i {
+            def entry@(optional):JsonValue (ownedIn.getKey(k))
+            if (null? entry) {
+                continue
+            }
+            owned.putKey(k (unwrap entry))
+        }
+        out.root.putKey("owned" owned)
+
+        def sections:JsonValue (JsonValue.newObject())
+        def sectionsIn:JsonValue (root.getObject("sections"))
+        def sectionKeys:[string] (StarterText.sorted(sectionsIn.order))
+        for sectionKeys k:string i {
+            def entry@(optional):JsonValue (sectionsIn.getKey(k))
+            if (null? entry) {
+                continue
+            }
+            sections.putKey(k (unwrap entry))
+        }
+        out.root.putKey("sections" sections)
+        return out
+    }
+}

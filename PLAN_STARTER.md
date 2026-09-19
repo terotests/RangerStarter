@@ -1,6 +1,11 @@
 # PLAN_STARTER — RangerStarter as the Ranger project configurator
 
-Status: **design, nothing implemented.** This document is the plan for turning
+Status: **M0 to M2 are implemented and tested; M3 to M5 are partly there.** See
+§20, at the end, for exactly what exists, what it is verified against, and what
+changed from this design once it met the compiler. §1 to §19 are the design as
+originally written and are not edited to match.
+
+This document is the plan for turning
 this repository from a starter *tree* into a starter *tool*: a command line
 program that asks what you are building, writes a project description, and
 generates the project from it — for a human at a terminal and for a coding
@@ -961,6 +966,8 @@ everything after them is templates and a terminal.
 
 ---
 
+---
+
 ## 18. Open decisions
 
 Four things where a different answer changes the work, listed so they can be
@@ -990,3 +997,128 @@ Flutter UI, embedded targets, a plugin system for third-party profiles, and
 merging `ranger.project.json` into the compiler's own project manifest. Each is
 named in §10.8 or §3.1 with the seam it arrives through, and none of them is
 needed to prove the architecture.
+
+---
+
+## 20. What is built, and what the design got wrong
+
+Written after implementing M0 to M2. The architecture above survived contact;
+several of its details did not, and those are the interesting part.
+
+### 20.1 What exists
+
+| File | What it is |
+| --- | --- |
+| `StarterJson.rgr` | a JSON value, parser and writer with explicit key order |
+| `StarterText.rgr` | sorting, line splitting, path and name helpers |
+| `StarterHash.rgr` | the generated-file fingerprint |
+| `StarterConfig.rgr` | `ranger.project.json` as a typed view over its tree |
+| `StarterTargets.rgr` | the target table, from the compiler or bundled |
+| `StarterPlan.rgr` | `ProjectPlan`: files, scripts, deps, sections, checks |
+| `StarterProfile.rgr` | the profile base class and its seven contributions |
+| `ProfileCli.rgr`, `ProfileLibrary.rgr` | the two surfaces that work |
+| `StarterProfiles.rgr` | the registry |
+| `StarterTemplates.rgr` | the generated file bodies |
+| `StarterPlanner.rgr` | `Config` -> `ProjectPlan`, plus the core files |
+| `StarterMarkdown.rgr` | managed-region render and merge |
+| `StarterJsonMerge.rgr` | structured merge with recorded ownership |
+| `StarterManifest.rgr` | `.ranger/generated.json` |
+| `StarterFilePlan.rgr` | `DiskState`, `FileAction`, `FilePlan`, pure apply |
+| `StarterGenerator.rgr` | `ProjectPlan` + `DiskState` -> `FilePlan` |
+| `StarterHost.rgr` | the only file that touches the world |
+| `StarterMain.rgr` | argv -> a command -> an exit status |
+| `StarterDump.rgr` | print a plan for a configuration built in code |
+| `StarterTest.rgr` | 140 checks, no filesystem |
+
+### 20.2 What it is verified against
+
+Not "it compiles". The following were run:
+
+* **140 checks on three targets.** `npm run starter:test`, `:python` and `:go`
+  all pass, with the compiler `npm install` resolves today.
+* **Thirteen of fourteen targets compile** the core. Scala does not, for a
+  reason that is not this code's -- see §20.5.
+* **A generated project runs.** `init`, `apply`, `npm install`, `npm start`,
+  `npm test`, `npm run build:go` -- end to end, in a scratch directory.
+* **Applying twice is a no-op**, checked with `git diff --exit-code` on a real
+  generated project and by a third pass in the test.
+* **A surface toggled on and off leaves the project byte-identical** to one that
+  never had it -- `package.json`, `AGENTS.md`, the seeds, all of it.
+* **Author edits survive.** A hand-added `lint` script, a `workspaces` key and a
+  paragraph of README prose all came through an apply untouched.
+* **A hand-edited generated file is kept and reported**, not overwritten.
+
+### 20.3 The four open decisions, decided
+
+1. **`npm start` overloading** -- not implemented yet and no longer needed in the
+   form proposed. In a GENERATED project `npm start` runs the project, because a
+   configuration exists by definition. The overload only matters for a cloned
+   copy of this repository, which is M7's problem.
+2. **TypeScript as a target** -- offered, as an `es6` variant. `StarterTarget`
+   carries `variantOf`, `languageFlag()` answers `es6`, and the generated script
+   is `-l=es6 -- -typescript`. A test asserts it, because the failure mode is
+   `Invalid language : typescript` in somebody else's project.
+3. **Does apply run `npm install`** -- yes, as the last action, suppressed by
+   `--no-install`.
+4. **Where the tool lives** -- `src/starter/`, FLAT. Not `src/starter/profiles/`
+   as designed: profiles use inheritance, and importing one file by two different
+   path spellings is the documented way to break inherited-method resolution.
+   Moving the example project out of `src/` has not been done.
+
+### 20.4 Where the design was wrong
+
+* **The `rgr` wrapper cannot be a shell script.** `write_file` cannot set an
+  executable bit, so a generated `scripts/rgr` would have to be run as `bash
+  scripts/rgr` -- and `bash` is not on PATH in the shell npm uses on Windows. It
+  is `scripts/rgr.js`, a node script, which adds no requirement the project did
+  not already have and resolves the compiler out of `node_modules` directly
+  instead of going through `npx`.
+* **`sha256` in the manifest is a `fingerprint`.** There is no hash in a
+  dependency-free core, and FNV-1a is not portable: it relies on wrapping at 32 or
+  64 bits, and Ranger's `int` is a double on JavaScript, so the same file would
+  fingerprint differently depending on which target wrote the manifest. It is two
+  rolling polynomial hashes and the length, every intermediate under 1.4e11.
+* **Only generated files are fingerprinted.** Recording one for `package.json`
+  meant that after an author edited it, the next apply re-fingerprinted it and the
+  manifest changed -- so "apply twice is a no-op" was false until the third pass.
+  The fingerprint answers "may I overwrite this?", which is only ever asked about
+  generated files.
+* **Three operators had to be declared.** The compiler `npm install` resolves has
+  no synchronous file read (`read_file` is async, `read_file_sync` postdates
+  3.5.1), no file delete, and no `set_exit_code`; `main:int` is ignored on es6
+  there too. Each is declared in `StarterHost.rgr` for es6, Python and Go, with
+  the name of the built-in that replaces it.
+* **`join` is not used.** On Go it emitted `strings.Join` without importing
+  `strings`, so a program whose only use of that package was `join` produced Go
+  that does not build. Fixed upstream (Ranger ISSUES.md #88) but not in the
+  published compiler, so the core has `StarterText.joinWith`.
+* **A class field needs an INLINE initialiser to be non-optional.** Assigning it
+  in the constructor is not enough: the field still reads back as optional and
+  cannot be passed to anything expecting the bare type. Three holder fields had
+  to move their initialiser onto the declaration.
+* **An enabled surface with no profile is an error.** The design did not say what
+  should happen. Generating everything except that surface and saying nothing
+  would produce a project quietly different from the one asked for.
+
+### 20.5 Blocked, and on what
+
+* **Scala.** The writer refuses `continue` inside a `for` loop
+  (Ranger ISSUES.md #89), which is how every guard in this core is written; and
+  separately it never emits the `@(main)` body at all while reporting success
+  (#90), so a Scala build of ANY program in this repository is a library with no
+  entry point. Both were found by this work and are recorded upstream. Neither is
+  worked around here: inverting ten guards to dodge a compiler limitation is a
+  workaround nobody would ever remove.
+* **PHP** carries `$` in a string literal correctly only from the next compiler
+  release (#83, fixed upstream). The templates are full of `$`, so a PHP build of
+  the core produces broken string literals until then. It compiles.
+* **`rgrc -targets -json`** does not exist, so `source` reads `bundled` and
+  `doctor` says so.
+
+### 20.6 What M3 to M5 still want
+
+The CLI and library profiles are real but thin: no `-apistrict` gate in CI, no
+generated GitHub workflow, and `doctor` checks tools without checking versions.
+`plan --json` is accepted as a flag and prints the text form. M6 onwards -- web,
+server, desktop, Android, iOS -- is untouched, and enabling one of those surfaces
+is an error that says so.

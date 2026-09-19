@@ -1,0 +1,476 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterPlan -- what the profiles contribute into, before anything looks at
+; disk.
+;
+; A `ProjectPlan` is the whole of what a configuration means, as data: the files,
+; the npm scripts, the dependencies, the sections of AGENTS.md / CLAUDE.md /
+; README.md, the commands to run afterwards, and the checks `doctor` should make.
+; It knows nothing about what is already on disk -- that is `StarterFilePlan`'s
+; job -- which is what makes it comparable against a golden file.
+;
+; EVERYTHING IS SORTED before it is read back. Profiles contribute in canonical
+; surface order today, but "the order the profiles happened to run in" is not a
+; property a generated file should depend on: add a profile, or reorder the
+; registry, and every generated project would show a diff that means nothing. So
+; the accessors sort, and the contribution order only breaks ties.
+
+Import "StarterConfig.rgr"
+Import "StarterText.rgr"
+
+; A file the project should have.
+;
+; `ownership` is the most consequential field in this file, because it decides
+; what happens when the file already exists:
+;
+;   "generated"  -- the tool owns it. Overwritten, and removable when the
+;                   surface that asked for it is turned off. Build scripts,
+;                   host shells, CMakeLists, the CI workflow.
+;   "structured" -- shared. Parsed and merged, so keys the tool has never heard
+;                   of survive. package.json, ranger.json.
+;   "managed"    -- the author's. Only the regions between markers are written.
+;                   README.md, AGENTS.md, CLAUDE.md.
+class PlanFile {
+
+    def path:string ""
+    def contents:string ""
+    def ownership:string "generated"
+    def profile:string "core"
+
+    ; Set on a file whose content is a starting point rather than an output: a
+    ; `src/Main.rgr` is written once and is the author's from then on, even
+    ; though the tool produced it. Nothing rewrites a seed that already exists.
+    def isSeed:boolean false
+
+    Constructor () {
+    }
+
+    sfn generated:PlanFile (path:string contents:string profile:string) {
+        def f (new PlanFile())
+        f.path = path
+        f.contents = contents
+        f.ownership = "generated"
+        f.profile = profile
+        return f
+    }
+
+    sfn structured:PlanFile (path:string contents:string profile:string) {
+        def f (new PlanFile())
+        f.path = path
+        f.contents = contents
+        f.ownership = "structured"
+        f.profile = profile
+        return f
+    }
+
+    sfn managed:PlanFile (path:string contents:string profile:string) {
+        def f (new PlanFile())
+        f.path = path
+        f.contents = contents
+        f.ownership = "managed"
+        f.profile = profile
+        return f
+    }
+
+    sfn seed:PlanFile (path:string contents:string profile:string) {
+        def f (new PlanFile())
+        f.path = path
+        f.contents = contents
+        f.ownership = "generated"
+        f.profile = profile
+        f.isSeed = true
+        return f
+    }
+}
+
+class PlanScript {
+
+    def name:string ""
+    def command:string ""
+    def profile:string "core"
+
+    Constructor () {
+    }
+
+    sfn entry:PlanScript (name:string command:string profile:string) {
+        def s (new PlanScript())
+        s.name = name
+        s.command = command
+        s.profile = profile
+        return s
+    }
+}
+
+class PlanDependency {
+
+    def name:string ""
+    def version:string ""
+    def isDev:boolean true
+    def profile:string "core"
+
+    Constructor () {
+    }
+
+    sfn dev:PlanDependency (name:string version:string profile:string) {
+        def d (new PlanDependency())
+        d.name = name
+        d.version = version
+        d.isDev = true
+        d.profile = profile
+        return d
+    }
+
+    sfn runtime:PlanDependency (name:string version:string profile:string) {
+        def d (new PlanDependency())
+        d.name = name
+        d.version = version
+        d.isDev = false
+        d.profile = profile
+        return d
+    }
+}
+
+; One managed region of a Markdown file. `id` is what goes into the marker, so it
+; must be stable across versions of the tool: renaming an id orphans the region
+; that is already in somebody's file.
+class PlanSection {
+
+    def file:string ""
+    def id:string ""
+    def body:string ""
+    def profile:string "core"
+
+    ; Sections are written in rank order, so a profile cannot change the shape of
+    ; AGENTS.md by being registered earlier.
+    def rank:int 500
+
+    Constructor () {
+    }
+
+    sfn about:PlanSection (file:string id:string rank:int body:string profile:string) {
+        def s (new PlanSection())
+        s.file = file
+        s.id = id
+        s.rank = rank
+        s.body = body
+        s.profile = profile
+        return s
+    }
+}
+
+; A command to run after the files are written -- `npm install`, and nothing else
+; in the first version. It is part of the plan rather than a side effect so that
+; `plan` can print it and `--no-install` can drop it.
+class PlanCommand {
+
+    def program:string ""
+    def args:[string]
+    def cwd:string ""
+    def why:string ""
+
+    Constructor () {
+    }
+
+    fn commandLine:string () {
+        def out:string program
+        for args a:string i {
+            out = out + " " + a
+        }
+        return out
+    }
+}
+
+; One thing `doctor` looks for. A check is DATA, not code that shells out: that is
+; what lets the doctor be tested on a machine that has none of the toolchains,
+; and what lets `doctor --json` be a projection of the same list.
+class PlanCheck {
+
+    def group:string ""
+    def label:string ""
+    def program:string ""
+    def args:[string]
+
+    ; What to do about it. Printed only when the check fails, so it can be long.
+    def hint:string ""
+
+    ; "" when the check applies everywhere. An operating system name -- "darwin"
+    ; -- when the check cannot even be attempted elsewhere, which the doctor
+    ; reports as unavailable rather than as a failure. Generating an iOS surface
+    ; on Linux is correct; building it there is not possible.
+    def onlyOn:string ""
+
+    ; A check whose absence is a warning rather than a problem.
+    def optional:boolean false
+
+    Constructor () {
+    }
+
+    sfn tool:PlanCheck (group:string label:string program:string hint:string) {
+        def c (new PlanCheck())
+        c.group = group
+        c.label = label
+        c.program = program
+        c.hint = hint
+        return c
+    }
+}
+
+class ProjectPlan {
+
+    def files:[PlanFile]
+    def scripts:[PlanScript]
+    def dependencies:[PlanDependency]
+    def sections:[PlanSection]
+    def commands:[PlanCommand]
+    def checks:[PlanCheck]
+    def problems:[StarterProblem]
+
+    ; The skills the enabled profiles asked for, by name. Not every name exists
+    ; yet; `skills: "auto"` installs what does and says nothing about the rest.
+    def skills:[string]
+
+    Constructor () {
+    }
+
+    ; --- contributions --------------------------------------------------------
+    ;
+    ; A later contribution of the same path, script name or dependency replaces
+    ; the earlier one. That is what lets a surface profile override a default the
+    ; core put there, without the core needing to know which profiles exist.
+
+    fn addFile:void (file:PlanFile) {
+        def replaced:boolean false
+        def rebuilt:[PlanFile]
+        for files existing:PlanFile i {
+            if (existing.path == file.path) {
+                push rebuilt file
+                replaced = true
+            } {
+                push rebuilt existing
+            }
+        }
+        if (replaced == false) {
+            push rebuilt file
+        }
+        files = rebuilt
+    }
+
+    fn addScript:void (script:PlanScript) {
+        def replaced:boolean false
+        def rebuilt:[PlanScript]
+        for scripts existing:PlanScript i {
+            if (existing.name == script.name) {
+                push rebuilt script
+                replaced = true
+            } {
+                push rebuilt existing
+            }
+        }
+        if (replaced == false) {
+            push rebuilt script
+        }
+        scripts = rebuilt
+    }
+
+    fn addDependency:void (dep:PlanDependency) {
+        def replaced:boolean false
+        def rebuilt:[PlanDependency]
+        for dependencies existing:PlanDependency i {
+            if (existing.name == dep.name) {
+                push rebuilt dep
+                replaced = true
+            } {
+                push rebuilt existing
+            }
+        }
+        if (replaced == false) {
+            push rebuilt dep
+        }
+        dependencies = rebuilt
+    }
+
+    fn addSection:void (section:PlanSection) {
+        def replaced:boolean false
+        def rebuilt:[PlanSection]
+        for sections existing:PlanSection i {
+            def sameFile:boolean (existing.file == section.file)
+            def sameId:boolean (existing.id == section.id)
+            if (sameFile) {
+                if (sameId) {
+                    push rebuilt section
+                    replaced = true
+                } {
+                    push rebuilt existing
+                }
+            } {
+                push rebuilt existing
+            }
+        }
+        if (replaced == false) {
+            push rebuilt section
+        }
+        sections = rebuilt
+    }
+
+    fn addCommand:void (command:PlanCommand) {
+        push commands command
+    }
+
+    fn addCheck:void (check:PlanCheck) {
+        push checks check
+    }
+
+    fn addSkill:void (name:string) {
+        if ((StarterText.includes(skills name)) == false) {
+            push skills name
+        }
+    }
+
+    fn addProblem:void (problem:StarterProblem) {
+        push problems problem
+    }
+
+    fn hasErrors:boolean () {
+        for problems p:StarterProblem i {
+            if (p.isError()) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; --- deterministic reads --------------------------------------------------
+
+    fn filesByPath:[PlanFile] () {
+        def out:[PlanFile]
+        for files item:PlanFile i {
+            def placed:boolean false
+            def rebuilt:[PlanFile]
+            for out existing:PlanFile j {
+                if (placed == false) {
+                    if (StarterText.lessThan(item.path existing.path)) {
+                        push rebuilt item
+                        placed = true
+                    }
+                }
+                push rebuilt existing
+            }
+            if (placed == false) {
+                push rebuilt item
+            }
+            out = rebuilt
+        }
+        return out
+    }
+
+    fn scriptsByName:[PlanScript] () {
+        def out:[PlanScript]
+        for scripts item:PlanScript i {
+            def placed:boolean false
+            def rebuilt:[PlanScript]
+            for out existing:PlanScript j {
+                if (placed == false) {
+                    if (StarterText.lessThan(item.name existing.name)) {
+                        push rebuilt item
+                        placed = true
+                    }
+                }
+                push rebuilt existing
+            }
+            if (placed == false) {
+                push rebuilt item
+            }
+            out = rebuilt
+        }
+        return out
+    }
+
+    fn dependenciesByName:[PlanDependency] () {
+        def out:[PlanDependency]
+        for dependencies item:PlanDependency i {
+            def placed:boolean false
+            def rebuilt:[PlanDependency]
+            for out existing:PlanDependency j {
+                if (placed == false) {
+                    if (StarterText.lessThan(item.name existing.name)) {
+                        push rebuilt item
+                        placed = true
+                    }
+                }
+                push rebuilt existing
+            }
+            if (placed == false) {
+                push rebuilt item
+            }
+            out = rebuilt
+        }
+        return out
+    }
+
+    ; The sections of one file, in rank order then id order.
+    fn sectionsOf:[PlanSection] (file:string) {
+        def out:[PlanSection]
+        for sections item:PlanSection i {
+            if (item.file != file) {
+                continue
+            }
+            def placed:boolean false
+            def rebuilt:[PlanSection]
+            for out existing:PlanSection j {
+                if (placed == false) {
+                    def before:boolean false
+                    if (item.rank < existing.rank) {
+                        before = true
+                    }
+                    if (item.rank == existing.rank) {
+                        if (StarterText.lessThan(item.id existing.id)) {
+                            before = true
+                        }
+                    }
+                    if before {
+                        push rebuilt item
+                        placed = true
+                    }
+                }
+                push rebuilt existing
+            }
+            if (placed == false) {
+                push rebuilt item
+            }
+            out = rebuilt
+        }
+        return out
+    }
+
+    ; Which Markdown files have managed sections, in the order they are written.
+    fn markdownFiles:[string] () {
+        def out:[string]
+        for sections item:PlanSection i {
+            if ((StarterText.includes(out item.file)) == false) {
+                push out item.file
+            }
+        }
+        return (StarterText.sorted(out))
+    }
+
+    fn fileAt@(optional):PlanFile (path:string) {
+        for files item:PlanFile i {
+            if (item.path == path) {
+                def hit@(optional):PlanFile item
+                return hit
+            }
+        }
+        def miss@(optional):PlanFile
+        return miss
+    }
+
+    fn checkGroups:[string] () {
+        def out:[string]
+        for checks item:PlanCheck i {
+            if ((StarterText.includes(out item.group)) == false) {
+                push out item.group
+            }
+        }
+        return out
+    }
+}
