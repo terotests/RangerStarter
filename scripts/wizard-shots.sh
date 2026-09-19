@@ -6,8 +6,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # The frame set is regenerated whole, so a renamed step cannot leave a ghost
 # frame behind that nothing produces any more and the documentation still links.
-# A failed run leaves the directory empty; `git checkout docs/wizard` restores it.
-rm -f "$here"/docs/wizard/*.txt "$here"/docs/wizard/*.png
+# `clean.py` removes only the frames these two walks name -- a blanket
+# `rm docs/wizard/*.png` would also delete the SDL2 window shot, which lives in
+# the same directory and is taken by `scripts/desktop-shot.sh`.
+for script in script.json script-mobile.json; do
+    python3 "$here/scripts/wizard-shots/clean.py" \
+        "$here/scripts/wizard-shots/$script" "$here/docs/wizard"
+done
 
 # Two walks, each in its own empty directory: a command line project, and the
 # two mobile surfaces -- which are the only ones with a device question, and the
