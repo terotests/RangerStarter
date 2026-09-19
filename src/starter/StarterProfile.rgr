@@ -98,6 +98,18 @@ class StarterProfile {
         return ""
     }
 
+    ; What `npm start` should run when no surface has claimed it outright.
+    ; Answered by the profile and asked in registration order, so the surface
+    ; that wins is a property of the registry rather than of a chain of `if`s in
+    ; the planner -- which is what left a mobile-only project with no `start` at
+    ; all until somebody generated one.
+    ;
+    ; "" means this surface has nothing to offer: a library is not run, and a
+    ; command line surface sets `start` itself.
+    fn startCommand:string (cfg:StarterConfig) {
+        return ""
+    }
+
     ; --- the seven contributions ---------------------------------------------
     ;
     ; `validate` runs first and may add problems; when any of them is an error,

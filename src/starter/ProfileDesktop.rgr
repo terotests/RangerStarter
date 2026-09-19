@@ -1,0 +1,231 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileDesktop -- an SDL2 window over a Ranger module compiled to C++.
+;
+;     src/Shared.rgr  ->  C++  ->  #include'd by the host  ->  CMake  ->  a binary
+;
+; THE SAME MODULE THE MOBILE SURFACES USE. A window is a third host for the
+; application, not a third copy of it: `src/Shared.rgr` compiles to Kotlin for
+; Android, to Swift for iOS and to C++ here, and each host owns its own
+; lifecycle, loop and pixels.
+;
+; A WINDOW WITH AN EVENT LOOP, NOT A UI TOOLKIT. EVG (`lib/evg`, MIT) is a
+; layout engine and can be added on purpose; the rasteriser and window layer the
+; gallery applications present through are AGPL-3.0-or-later. Neither is pulled
+; in here, and `scripts/add-gallery.sh` stays the only way either arrives --
+; with the licence said out loud first.
+;
+; THE HOST IS INCLUDED, NOT LINKED. The C++ target emits one `.cpp` carrying the
+; class definitions and no header to go with them, so `host/main.cpp` includes
+; it and the whole program is one translation unit. That is also why the host
+; has to include `<stdexcept>` itself up to ranger-compiler 3.5.1: the C++
+; prelude throws `std::out_of_range` without declaring it, which a whole program
+; never notices because the iostream chain drags the header in, and a MODULE
+; compiled for a host does.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileDesktop extends StarterProfile {
+
+    Constructor () {
+        id = "desktop"
+    }
+
+    fn defaultTarget:string () {
+        return "cpp"
+    }
+
+    ; SDL2 is a C library. There is one target that links against one.
+    fn targetsAllowed:[string] () {
+        def out:[string]
+        push out "cpp"
+        return out
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "entry" "src/Shared.rgr"))
+    }
+
+    ; The one surface of the three hosts that runs on the machine that built it.
+    fn startCommand:string (cfg:StarterConfig) {
+        return "npm run desktop:run"
+    }
+
+    fn moduleNameOf:string (cfg:StarterConfig) {
+        return (StarterText.stemName((this.entryOf(cfg))))
+    }
+
+    ; The binary's name, which is also the CMake project name. The project name
+    ; is an npm name, and npm allows characters CMake targets do not.
+    fn binaryOf:string (cfg:StarterConfig) {
+        return (ProfileDesktop.asBinaryName((cfg.projectName())))
+    }
+
+    sfn asBinaryName:string (name:string) {
+        def out:string ""
+        def cnt:int (strlen name)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt name i)
+            def keep:boolean false
+            if (c >= 97) {
+                if (c <= 122) {
+                    keep = true
+                }
+            }
+            if (c >= 65) {
+                if (c <= 90) {
+                    keep = true
+                }
+            }
+            if (c >= 48) {
+                if (c <= 57) {
+                    keep = true
+                }
+            }
+            if (c == 95) {
+                keep = true
+            }
+            if keep {
+                out = out + (strfromcode c)
+            } {
+                out = out + "_"
+            }
+            i = i + 1
+        }
+        if ((strlen out) == 0) {
+            return "app"
+        }
+        return out
+    }
+
+    fn singleThreadOf:boolean (cfg:StarterConfig) {
+        return (cfg.flagOf(id "singleThread" false))
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+        def runtime:string (cfg.optionOf(id "runtime" "sdl2"))
+        if (runtime != "sdl2") {
+            plan.addProblem((StarterProblem.about("surfaces.desktop.runtime" ("`" + runtime + "` is not a desktop runtime this version knows. It is `sdl2`."))))
+        }
+        ; Not a style rule. `-cpp-single-thread` removes the atomics from
+        ; reference counting, so a pointer copied across threads corrupts the
+        ; count -- and the generated host is single-threaded, which is why the
+        ; option is offered at all. Warn, do not refuse: it is the author's
+        ; program.
+        if (this.singleThreadOf(cfg)) {
+            plan.addProblem((StarterProblem.warn("surfaces.desktop.singleThread" "`-cpp-single-thread` drops the atomics from reference counting. The generated host starts no threads, so this is safe as generated -- but a pointer copied across threads will corrupt its count. Turn it off before you start one.")))
+        }
+    }
+
+    sfn generatedDir:string () {
+        return "build/desktop"
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((this.moduleNameOf(cfg))))
+        def name:string (cfg.projectName())
+        def bin:string (this.binaryOf(cfg))
+
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+        plan.addFile((PlanFile.generated("desktop/CMakeLists.txt" (StarterTemplates.desktopCMake(name bin (this.singleThreadOf(cfg)))) id)))
+
+        ; The host and the module are seeds. What the window draws is the point
+        ; of having one, and a host nobody may edit is a host nobody wants.
+        plan.addFile((PlanFile.seed("desktop/host/main.cpp" (StarterTemplates.desktopHost(name className)) id)))
+        plan.addFile((PlanFile.seed(entry (StarterTemplates.mobileSeed(name className)) id)))
+
+        plan.addIgnore((ProfileDesktop.generatedDir()) + "/")
+        plan.addIgnore("build/desktop-cmake/")
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def bin:string (this.binaryOf(cfg))
+
+        def compile:string ("node scripts/rgr.js build " + entry + " -l=cpp -d=" + (ProfileDesktop.generatedDir()))
+        if (this.singleThreadOf(cfg)) {
+            compile = (compile + " -- -cpp-single-thread")
+        }
+        plan.addScript((PlanScript.entry("desktop:compile" compile id)))
+        plan.addScript((PlanScript.entry("desktop:build" "npm run desktop:compile && cmake -S desktop -B build/desktop-cmake && cmake --build build/desktop-cmake" id)))
+        plan.addScript((PlanScript.entry("desktop:run" ("npm run desktop:build && ./build/desktop-cmake/" + bin) id)))
+        ; The one command CI can run. `dummy` is SDL's own null video driver:
+        ; there is no window and no window manager, so the frame limit is what
+        ; ends it -- nothing will ever close it.
+        def smoke:PlanScript (PlanScript.entry("desktop:smoke" ("npm run desktop:build && SDL_VIDEODRIVER=dummy ./build/desktop-cmake/" + bin + " 30") id))
+        ; This is the surface that CAN be proved in CI: SDL2 is an apt package,
+        ; the dummy driver needs no display, and the frame limit means the job
+        ; ends. Android wants an SDK and iOS wants a Mac; neither belongs on a
+        ; plain runner, so neither asks.
+        smoke.inCi = true
+        smoke.ciSetup = "sudo apt-get update && sudo apt-get install -y cmake libsdl2-dev"
+        plan.addScript(smoke)
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def className:string (StarterText.pascalCase((this.moduleNameOf(cfg))))
+        def bin:string (this.binaryOf(cfg))
+
+        def l:[string]
+        push l "## Desktop (SDL2)"
+        push l ""
+        push l ("Ranger source: `" + entry + "`, compiled to C++ into")
+        push l ("`" + (ProfileDesktop.generatedDir()) + "/" + className + ".cpp` and **included** by the host")
+        push l "shell in `desktop/host/main.cpp`, which owns the window and the event loop."
+        push l ""
+        push l "```bash"
+        push l "npm run desktop:compile   # Ranger -> C++"
+        push l "npm run desktop:build     # and cmake"
+        push l "npm run desktop:run       # and run it"
+        push l "npm run desktop:smoke     # 30 frames with SDL_VIDEODRIVER=dummy -- no window"
+        push l "```"
+        push l ""
+        push l "- **The module is included, not linked.** The C++ target emits one `.cpp`"
+        push l "  with the class definitions in it and no header, so the host `#include`s it"
+        push l "  and the program is one translation unit."
+        push l ("- **`" + (ProfileDesktop.generatedDir()) + "` is generated** and gitignored.")
+        push l "  Edit the Ranger source. `desktop/host/main.cpp` is yours; nothing"
+        push l "  regenerates it. `desktop/CMakeLists.txt` IS regenerated, so change"
+        push l "  `ranger.project.json` rather than the file."
+        push l "- **SDL2 is found two ways**, and it has to be: `find_package` finds the"
+        push l "  config package Homebrew and vcpkg ship, `pkg-config` finds the"
+        push l "  distribution one, which on Debian and Ubuntu is the only one there is."
+        push l "- **The renderer falls back to software.** A container, a VM or CI has no"
+        push l "  accelerated renderer, and failing there rather than falling back is the"
+        push l "  most common way a working SDL2 program looks broken."
+        push l "- **`npm run desktop:smoke` is the CI command.** `SDL_VIDEODRIVER=dummy`"
+        push l "  gives SDL no window and no window manager, so the frame limit is what ends"
+        push l "  the program -- nothing is there to close it."
+        push l "- **A window, not a UI toolkit.** EVG (`lib/evg`) is MIT and can be added"
+        push l "  with `scripts/add-gallery.sh evg`; the rasteriser and window layer the"
+        push l "  gallery applications present through are AGPL-3.0-or-later. Neither is"
+        push l "  here, and neither arrives without being asked for."
+        if (this.singleThreadOf(cfg)) {
+            push l "- **`-cpp-single-thread` is on.** It drops the atomics from reference"
+            push l "  counting. The host starts no threads, so it is safe as generated -- but a"
+            push l "  pointer copied across threads will corrupt its count."
+        }
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-desktop" 330 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addCheck((PlanCheck.tool("Desktop" "cmake" "cmake" "The host is a CMake project. `brew install cmake`, or `apt-get install cmake`.")))
+        ; Not a program check that can be spelled one way: SDL2 is a library, and
+        ; what lands on PATH when it is installed is `sdl2-config`. pkg-config
+        ; knows about it too, but `pkg-config --exists sdl2` is a question, not a
+        ; version string, so this is the one that answers honestly.
+        plan.addCheck((PlanCheck.tool("Desktop" "SDL2" "sdl2-config" "`brew install sdl2`, or `apt-get install libsdl2-dev`. CMake also finds it through pkg-config, so a distribution install with no `sdl2-config` still builds.")))
+        def compiler:PlanCheck (PlanCheck.tool("Desktop" "C++ compiler" "c++" "A C++17 compiler: clang++ on macOS, g++ or clang++ on Linux."))
+        plan.addCheck(compiler)
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-build")
+    }
+}

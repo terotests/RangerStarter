@@ -924,8 +924,8 @@ class StarterTest {
         }
         t.isTrue("both mobile surfaces describe their devices" (sawAndroidDevices && sawIosDevices))
 
-        t.eqList("the surfaces this build generates" available "cli,library,web,android,ios")
-        t.eqList("and the ones it does not" unavailable "server,desktop")
+        t.eqList("the surfaces this build generates" available "cli,library,web,desktop,android,ios")
+        t.eqList("and the ones it does not" unavailable "server")
         t.eqInt("all seven are described either way" ((array_length available) + (array_length unavailable)) 7)
 
         ; The target list carries the one fact that breaks a generated command
@@ -1054,6 +1054,209 @@ class StarterTest {
         tooling.setOption("web" "tooling" "webpack")
         def p2:ProjectPlan (StarterTest.projectFor(tooling))
         t.isTrue("and only vite is known" (p2.hasErrors()))
+    }
+
+    ; --- the desktop surface --------------------------------------------------
+
+    sfn desktopConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("desktop" true)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testDesktopSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("a desktop-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "desktop:build,desktop:compile,desktop:run,desktop:smoke,doctor,plan,setup,start,test")
+
+        def compile:string (StarterTest.commandOf(project "desktop:compile"))
+        t.isTrue("the module is compiled to C++" (contains compile "-l=cpp"))
+        t.isTrue("into build/desktop" (contains compile "-d=build/desktop"))
+        t.isTrue("from the shared module" (contains compile "src/Shared.rgr"))
+        ; The atomics stay in unless somebody asks for them out.
+        t.isFalse("and reference counting keeps its atomics by default" (contains compile "-cpp-single-thread"))
+
+        t.eqStr("start runs the window" (StarterTest.commandOf(project "start")) "npm run desktop:run")
+        t.eqStr("and test type-checks the shared module" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Shared.rgr")
+
+        ; `SDL_VIDEODRIVER=dummy` is SDL's own null video driver: no window, no
+        ; window manager, and so nothing that will ever close the program. The
+        ; frame limit is what ends it, and without one the CI job hangs.
+        def smoke:string (StarterTest.commandOf(project "desktop:smoke"))
+        t.isTrue("the smoke test asks for no video" (contains smoke "SDL_VIDEODRIVER=dummy"))
+        t.isTrue("and gives the binary a frame limit" (contains smoke "northwind 30"))
+
+        def cmake@(optional):PlanFile (project.fileAt("desktop/CMakeLists.txt"))
+        t.isTrue("a CMake project is written" ((null? cmake) == false))
+        if ((null? cmake) == false) {
+            def c:PlanFile (unwrap cmake)
+            t.isFalse("generated, so the config stays the source of truth" c.isSeed)
+            t.isTrue("C++17, which SDL2 and the emitted code both need" (contains c.contents "CMAKE_CXX_STANDARD 17"))
+            ; Two ways, and it has to be two: find_package finds what Homebrew
+            ; and vcpkg ship, pkg-config finds the distribution package, which on
+            ; Debian and Ubuntu is the only one there is.
+            t.isTrue("SDL2 is looked for as a config package" (contains c.contents "find_package(SDL2 QUIET)"))
+            t.isTrue("and through pkg-config when that fails" (contains c.contents "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)"))
+            t.isTrue("the generated C++ is on the include path" (contains c.contents "build/desktop"))
+        }
+
+        def host@(optional):PlanFile (project.fileAt("desktop/host/main.cpp"))
+        t.isTrue("the host shell is planned" ((null? host) == false))
+        if ((null? host) == false) {
+            def h:PlanFile (unwrap host)
+            t.isTrue("as a seed, because what it draws is the point" h.isSeed)
+            ; Included, not linked: the C++ target emits one .cpp with the class
+            ; definitions in it and no header to go with them.
+            t.isTrue("it includes the module rather than linking it" (contains h.contents "#include \"Shared.cpp\""))
+            ; Up to ranger-compiler 3.5.1 the C++ prelude throws
+            ; std::out_of_range without declaring it. A whole program gets the
+            ; header through the iostream chain; a module does not.
+            t.isTrue("and <stdexcept> before it" (contains h.contents "#include <stdexcept>"))
+            t.isTrue("it opens a window" (contains h.contents "SDL_CreateWindow"))
+            t.isTrue("and pumps events" (contains h.contents "SDL_PollEvent"))
+            ; A container, a VM or CI has no accelerated renderer, and failing
+            ; there rather than falling back is the most common way a working
+            ; SDL2 program looks broken.
+            t.isTrue("the renderer falls back to software" (contains h.contents "SDL_RENDERER_SOFTWARE"))
+            t.isTrue("and the runtime gets its argv" (contains h.contents "__g_argc"))
+        }
+
+        def seed@(optional):PlanFile (project.fileAt("src/Shared.rgr"))
+        t.isTrue("the shared module is planned" ((null? seed) == false))
+
+        t.isTrue("the generated C++ is gitignored" (StarterText.includes(project.ignores "build/desktop/")))
+        t.isTrue("and so is CMake's own output" (StarterText.includes(project.ignores "build/desktop-cmake/")))
+
+        def sectionIds:[string]
+        for project.sections s:PlanSection i {
+            push sectionIds s.id
+        }
+        t.isTrue("the agent file documents the surface" (StarterText.includes(sectionIds "surface-desktop")))
+
+        ; The one surface of the three hosts a plain runner can actually prove,
+        ; so it is the one that asks to be in CI -- and it brings what the runner
+        ; has to install first, because SDL2 is not there by default.
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is written" ((null? ci) == false))
+        if ((null? ci) == false) {
+            def w:PlanFile (unwrap ci)
+            t.isTrue("and it runs the smoke test" (contains w.contents "run: npm run desktop:smoke"))
+            t.isTrue("after installing SDL2" (contains w.contents "libsdl2-dev"))
+        }
+    }
+
+    ; Android wants an SDK and iOS wants a Mac. Neither belongs on a plain
+    ; runner, and a workflow that tries is a red build nobody can fix.
+    sfn testMobileStaysOutOfCi:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.androidConfig())
+        cfg.setEnabled("ios" true)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setCi(true true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is still written" ((null? ci) == false))
+        if ((null? ci) == false) {
+            def w:PlanFile (unwrap ci)
+            t.isFalse("but it does not assemble an APK" (contains w.contents "android:build"))
+            t.isFalse("nor install one" (contains w.contents "android:install"))
+            t.isFalse("and it does not try to build for iOS" (contains w.contents "ios:build"))
+            ; `npm test` is in it, and that type-checks the shared module -- which
+            ; is the part of a mobile project a Linux runner CAN check.
+            t.isTrue("it still runs the tests" (contains w.contents "run: npm test"))
+        }
+    }
+
+    ; `-cpp-single-thread` is offered because the generated host is
+    ; single-threaded. It is a warning rather than a refusal: it is the author's
+    ; program, and the flag is correct until a thread exists.
+    sfn testDesktopSingleThread:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        cfg.setFlag("desktop" "singleThread" true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("it is not an error" (project.hasErrors()))
+        def warned:boolean false
+        for project.problems p:StarterProblem i {
+            if (p.path == "surfaces.desktop.singleThread") {
+                warned = true
+                t.isTrue("but it is said out loud" (contains p.message "atomics"))
+            }
+        }
+        t.isTrue("the trade is stated" warned)
+        def compile:string (StarterTest.commandOf(project "desktop:compile"))
+        t.isTrue("and the flag reaches the compiler" (contains compile "-- -cpp-single-thread"))
+    }
+
+    sfn testDesktopRejectsAnotherRuntime:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        cfg.setOption("desktop" "runtime" "gtk")
+        t.isTrue("only sdl2 is known" (StarterTest.problemAt((StarterTest.projectFor(cfg)) "surfaces.desktop.runtime")))
+
+        def target:StarterConfig (StarterTest.desktopConfig())
+        def ts:[string]
+        push ts "es6"
+        target.setTargets("desktop" ts)
+        t.isTrue("and SDL2 is a C library, so the target is cpp" ((StarterTest.projectFor(target)).hasErrors()))
+    }
+
+    ; The binary is also the CMake target name, and npm names allow characters
+    ; CMake targets do not.
+    sfn testDesktopBinaryName:void (t:StarterCheck) {
+        t.eqStr("a plain name is used as it is" (ProfileDesktop.asBinaryName("northwind")) "northwind")
+        t.eqStr("a hyphen becomes an underscore" (ProfileDesktop.asBinaryName("north-wind")) "north_wind")
+        t.eqStr("and a scope too" (ProfileDesktop.asBinaryName("@acme/north-wind")) "_acme_north_wind")
+        t.eqStr("an empty name still names something" (ProfileDesktop.asBinaryName("")) "app")
+    }
+
+    ; Desktop, Android and iOS are three hosts for ONE module. That is the whole
+    ; claim, so it is the thing to test.
+    sfn testThreeHostsOneModule:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("desktop" true)
+        cfg.setEnabled("android" true)
+        cfg.setEnabled("ios" true)
+        def phones:[string]
+        push phones "phone"
+        cfg.setDevices("android" phones)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setAgents(true true "auto")
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("all three plan together" (project.hasErrors()))
+
+        def shared:int 0
+        for project.files f:PlanFile i {
+            if (f.path == "src/Shared.rgr") {
+                shared = shared + 1
+            }
+        }
+        t.eqInt("and the module is planned exactly once" shared 1)
+
+        def cpp:string (StarterTest.commandOf(project "desktop:compile"))
+        def kotlin:string (StarterTest.commandOf(project "android:compile"))
+        def swift:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("C++ comes from it" (contains cpp "src/Shared.rgr"))
+        t.isTrue("Kotlin from the same file" (contains kotlin "src/Shared.rgr"))
+        t.isTrue("and Swift from the same file" (contains swift "src/Shared.rgr"))
+        ; Three outputs, three directories. A shared one would have them
+        ; overwrite each other, which is a build that works until it does not.
+        t.isTrue("into three directories" (contains cpp "-d=build/desktop"))
+        t.isTrue("that do not collide" (contains kotlin "-d=platforms/android"))
+        t.isTrue("in any pair" (contains swift "-d=build/ios"))
+
+        ; `start` is one command, and the command line surface is not enabled, so
+        ; something has to claim it. Desktop is the only one of the three that
+        ; can actually run here.
+        t.eqStr("the window is what start runs" (StarterTest.commandOf(project "start")) "npm run desktop:run")
     }
 
     ; --- the two mobile surfaces ----------------------------------------------
@@ -1612,6 +1815,12 @@ class StarterTest {
         StarterTest.testWebSurface(t)
         StarterTest.testWebAndCliTogether(t)
         StarterTest.testWebRejectsAnImpossibleTarget(t)
+        StarterTest.testDesktopSurface(t)
+        StarterTest.testMobileStaysOutOfCi(t)
+        StarterTest.testDesktopSingleThread(t)
+        StarterTest.testDesktopRejectsAnotherRuntime(t)
+        StarterTest.testDesktopBinaryName(t)
+        StarterTest.testThreeHostsOneModule(t)
         StarterTest.testAndroidSurface(t)
         StarterTest.testAndroidDevices(t)
         StarterTest.testIosSurface(t)

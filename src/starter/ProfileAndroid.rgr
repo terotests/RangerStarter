@@ -179,6 +179,12 @@ class ProfileAndroid extends StarterProfile {
         return (cfg.optionOf(id "entry" "src/Shared.rgr"))
     }
 
+    ; As close to "run it" as a command line gets: the APK goes onto a device or
+    ; an emulator, and the launcher does the rest.
+    fn startCommand:string (cfg:StarterConfig) {
+        return "npm run android:install"
+    }
+
     fn moduleNameOf:string (cfg:StarterConfig) {
         return (StarterText.stemName((this.entryOf(cfg))))
     }

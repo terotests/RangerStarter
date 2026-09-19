@@ -53,10 +53,10 @@ independent dimensions, and the configuration stores them that way.
 
 ![the surfaces screen](wizard/03-surfaces.png)
 
-Pick as many as apply. Two of the seven are not built yet — and they are
-**shown**, with the milestone that will bring them, rather than hidden. Hiding
-them would hide the plan; offering them as selectable would let you build a
-configuration that fails to apply. So they are visible and refuse to be ticked:
+Pick as many as apply. One of the seven is not built yet — and it is **shown**,
+with the milestone that will bring it, rather than hidden. Hiding it would hide
+the plan; offering it as selectable would let you build a configuration that
+fails to apply. So it is visible and refuses to be ticked:
 
 ![an unavailable surface says why](wizard/04-unavailable.png)
 
@@ -170,6 +170,7 @@ the answer — a watch build and a phone build differ only there:
 | **Web** | `web/index.html`, `web/main.js`, a Ranger ES module compiled into `web/generated/`, and Vite |
 | **Android** | `platforms/android` — a Gradle project with a Compose shell — and `src/Shared.rgr` compiled to Kotlin into the app's source set |
 | **iOS** | `platforms/ios/App.swift` — a SwiftUI shell — and `scripts/ios-build.rgr`, which builds a `.app` with no `.xcodeproj` and no `xcodebuild` |
+| **Desktop (SDL2)** | `desktop/host/main.cpp` — a window and an event loop — and `desktop/CMakeLists.txt`, over the same module compiled to C++ |
 
 The web surface has three details worth knowing, each of which is a trap
 somebody would otherwise hit once:
@@ -183,13 +184,14 @@ somebody would otherwise hit once:
   `server.fs.allow`, and getting that wrong produces a 403 in dev that says
   nothing useful.
 
-### The two mobile surfaces are one module
+### Three surfaces, one module
 
-Android and iOS both default to `src/Shared.rgr`, class `Shared`, and compile
-**the same file** to Kotlin and to Swift. That is the point of the language, and
-two near-identical modules would be the opposite of it. The host shell on each
-platform owns the lifecycle and the UI; the Ranger module owns what the app
-knows, and has no `main` — the platform calls the shell and the shell calls it.
+Desktop, Android and iOS all default to `src/Shared.rgr`, class `Shared`, and
+compile **the same file** to C++, to Kotlin and to Swift. That is the point of
+the language, and three near-identical modules would be the opposite of it. The
+host shell on each platform owns the lifecycle, the loop and the pixels; the
+Ranger module owns what the app knows, and has no `main` — the platform calls
+the shell and the shell calls it.
 
 ![the generated mobile project](wizard/30-mobile-generated.png)
 
@@ -214,6 +216,45 @@ Three more things worth knowing before they cost an afternoon:
   drives `xcrun`, `swiftc`, `plutil` and `codesign` through `lib/apple`, which
   ships inside `ranger-compiler` — nothing to install and nothing to declare.
 
+### The desktop surface
+
+`desktop/host/main.cpp` opens an SDL2 window, pumps events and draws a frame.
+The Ranger module is **included, not linked**: the C++ target emits one `.cpp`
+with the class definitions in it and no header to go with them, so the host
+`#include`s it and the program is one translation unit.
+
+```bash
+npm run desktop:compile   # Ranger -> C++
+npm run desktop:build     # and cmake
+npm run desktop:run       # and run it
+npm run desktop:smoke     # 30 frames with SDL_VIDEODRIVER=dummy -- no window
+```
+
+- **SDL2 is discovered two ways, and it has to be.** `find_package(SDL2)` finds
+  the config package Homebrew and vcpkg ship; `pkg_check_modules` finds the
+  distribution one, which on Debian and Ubuntu is the only one there is. A
+  project that knows only one of them fails on half the machines with a message
+  about a missing package that *is* installed.
+- **The renderer falls back to software.** A container, a VM or a CI runner has
+  no accelerated renderer, and failing there rather than falling back is the
+  single most common way a working SDL2 program looks broken.
+- **`desktop:smoke` is the only one of the three host surfaces CI can prove.**
+  `SDL_VIDEODRIVER=dummy` is SDL's own null driver: no window, no window
+  manager, and so nothing that will ever close the program — which is why the
+  binary takes a frame count. The generated workflow runs it, and installs
+  `libsdl2-dev` first. Android wants an SDK and iOS wants a Mac, so neither asks
+  to be in CI.
+- **A window, not a UI toolkit.** EVG (`lib/evg`) is MIT and can be added with
+  `scripts/add-gallery.sh evg`; the rasteriser and window layer the gallery
+  applications present through are AGPL-3.0-or-later. Neither is here, and
+  neither arrives without being asked for.
+- **`-cpp-single-thread` is a config-file switch, not a question.**
+  `surfaces.desktop.singleThread` drops the atomics from reference counting: the
+  generated host starts no threads, so it is safe as generated, and a pointer
+  copied across threads will corrupt its count. `plan` says so as a warning
+  every time it is on. It stays out of the wizard because the honest default is
+  off and anyone who needs it is already editing the file.
+
 ---
 
 ## Driving it without the questionnaire
@@ -235,6 +276,7 @@ works. Then:
 npx ranger-starter init --name shopfront --surfaces cli,web --targets es6 --json
 npx ranger-starter init --name shopfront --surfaces android,ios \
     --devices phone,tablet,iphone --json
+npx ranger-starter init --name shopfront --surfaces desktop --json
 npx ranger-starter plan --json      # the actions apply will perform
 npx ranger-starter apply --json
 npx ranger-starter doctor --json    # what this machine is missing

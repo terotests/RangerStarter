@@ -1017,7 +1017,7 @@ several of its details did not, and those are the interesting part.
 | `StarterTargets.rgr` | the target table, from the compiler or bundled |
 | `StarterPlan.rgr` | `ProjectPlan`: files, scripts, deps, sections, checks |
 | `StarterProfile.rgr` | the profile base class and its seven contributions |
-| `ProfileCli.rgr`, `ProfileLibrary.rgr`, `ProfileWeb.rgr`, `ProfileAndroid.rgr`, `ProfileIos.rgr` | the five surfaces that work |
+| `ProfileCli.rgr`, `ProfileLibrary.rgr`, `ProfileWeb.rgr`, `ProfileDesktop.rgr`, `ProfileAndroid.rgr`, `ProfileIos.rgr` | the six surfaces that work |
 | `StarterProfiles.rgr` | the registry |
 | `StarterTemplates.rgr` | the generated file bodies |
 | `StarterPlanner.rgr` | `Config` -> `ProjectPlan`, plus the core files |
@@ -1032,13 +1032,13 @@ several of its details did not, and those are the interesting part.
 | `StarterDoctor.rgr` | the pure verdict for one check on one platform |
 | `StarterDescribe.rgr` | `describe --json`, from the registries |
 | `StarterWizard.rgr`, `StarterWizardView.rgr` | the pure state machine and the pure renderer |
-| `StarterTest.rgr` | 369 checks, no filesystem |
+| `StarterTest.rgr` | 423 checks, no filesystem |
 
 ### 20.2 What it is verified against
 
 Not "it compiles". The following were run:
 
-* **369 checks on three targets.** `npm run starter:test`, `:python` and `:go`
+* **423 checks on three targets.** `npm run starter:test`, `:python` and `:go`
   all pass, with the compiler `npm install` resolves today.
 * **Thirteen of fourteen targets compile** the core. Scala does not, for a
   reason that is not this code's -- see §20.5.
@@ -1050,10 +1050,15 @@ Not "it compiles". The following were run:
   never had it -- `package.json`, `AGENTS.md`, the seeds, all of it.
 * **Author edits survive.** A hand-added `lint` script, a `workspaces` key and a
   paragraph of README prose all came through an apply untouched.
-* **Both mobile surfaces compile from one module.** A generated `android,ios`
-  project compiles `src/Shared.rgr` to `platforms/android/app/src/main/generated/
-  Shared.kt` and to `build/ios/Shared.swift`, and `npm run ios:plan` prints the
-  whole iOS build -- on Linux, where it cannot be run.
+* **Three surfaces compile from one module.** A generated
+  `desktop,android,ios` project compiles `src/Shared.rgr` to
+  `platforms/android/app/src/main/generated/Shared.kt`, to
+  `build/ios/Shared.swift` and to `build/desktop/Shared.cpp`; `npm run ios:plan`
+  prints the whole iOS build on Linux, where it cannot be run.
+* **The desktop surface runs.** A generated `desktop` project builds through
+  CMake against the SDL2 an `apt-get install libsdl2-dev` provides and draws
+  thirty frames under `SDL_VIDEODRIVER=dummy` -- with the PUBLISHED compiler,
+  3.5.1, not a patched one.
 * **A hand-edited generated file is kept and reported**, not overwritten.
 
 ### 20.3 The four open decisions, decided
@@ -1251,7 +1256,59 @@ were all one step out of phase, because a target question for a single-target
 surface opens ALREADY TICKED and the script's `space` was unticking it. A
 screenshot nobody checks is a screenshot that documents last month.
 
-### 20.9 Driving it as an agent
+### 20.9 The desktop surface
+
+An SDL2 window over the SAME module the mobile surfaces use. `src/Shared.rgr`
+compiles to C++, and `desktop/host/main.cpp` -- a seed, because what the window
+draws is the point of having one -- owns the window, the event loop and the
+pixels. Three hosts, one module.
+
+* **The module is included, not linked.** The C++ target emits one `.cpp`
+  carrying the class definitions and no header to go with them, so the host
+  `#include`s it and the program is one translation unit. There was nothing to
+  link against.
+* **SDL2 is discovered two ways** -- `find_package(SDL2)` for the config package
+  Homebrew and vcpkg ship, `pkg_check_modules` for the distribution one, which
+  on Debian and Ubuntu is the only one there is. Knowing one of them fails on
+  half the machines with a message about a missing package that is installed.
+* **The renderer falls back to software.** A container, a VM or a runner has no
+  accelerated renderer, and failing there rather than falling back is the single
+  most common way a working SDL2 program looks broken.
+* **`-cpp-single-thread` is a config switch and a WARNING, not a refusal.** It
+  drops the atomics from reference counting; the generated host starts no
+  threads, so it is correct as generated and wrong the moment one exists. `plan`
+  says so every time it is on. It stays out of the wizard: the honest default is
+  off, and anybody who needs it is already editing the file.
+* **No gallery dependency, and the licence is why.** EVG (`lib/evg`) is MIT and
+  addable; the rasteriser and window layer the gallery applications present
+  through are AGPL-3.0-or-later. The profile generates a window with an event
+  loop and pulls in neither.
+
+**It found a compiler bug that only a module can find.** `rg_ordered_map::at`
+throws `std::out_of_range`, and the C++ prelude never included `<stdexcept>`. A
+whole program gets the header through the iostream chain and nobody ever
+noticed; a module compiled for a host shell to include does not, and fails on a
+declaration the user never wrote. Fixed upstream -- Ranger ISSUES.md #94, with a
+test that compiles a `main`-less module against a host -- and the generated host
+includes the header itself, because a generated project uses the PUBLISHED
+compiler and 3.5.1 still has the bug. The include is harmless once the fix
+ships.
+
+Two things moved out of the planner while this landed, both the same mistake in
+two places. `npm start`'s fallback was a chain of `if (cfg.isEnabled(...))` in
+`ensureStartAndTest` -- the same hardcoded surface chain that had `entryOf`
+type-checking a file a mobile project does not have. It is
+`StarterProfile.startCommand` now, asked of the enabled profiles in registration
+order, so which surface claims `start` is a property of the registry rather than
+of a chain nobody remembers to extend.
+
+CI steps are the same idea. `PlanScript` carries `inCi` and `ciSetup`, so a
+surface that can be exercised on a plain runner says so and brings whatever the
+runner has to install. Desktop is the only one of the three hosts that can:
+SDL2 is an apt package, the dummy driver needs no display, and the frame limit
+means the job ends. Android wants an SDK and iOS wants a Mac, so neither asks.
+
+### 20.10 Driving it as an agent
 
 `describe --json` is one call that answers the commands and their flags, which
 surfaces this BUILD can generate, the targets the installed compiler has, the
@@ -1264,10 +1321,10 @@ Every command takes `--json`, including the failures: a `--json` run that
 answered prose on error would leave an agent parsing sentences. Exit status is 0
 worked, 1 a problem with the project, 2 a problem with the command line.
 
-### 20.10 What is left
+### 20.11 What is left
 
-The server and desktop surfaces. Enabling one is an error that names the
-milestone; the wizard shows them, greyed, with the same note.
+The server surface. Enabling it is an error that names the milestone; the wizard
+shows it, greyed, with the same note.
 
 **The server surface is blocked on a release, not on design.** Ranger's
 `@(HttpServer)` annotation with `@(GET "/path")` methods now works on es6 as well

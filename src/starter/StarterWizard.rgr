@@ -246,9 +246,6 @@ class StarterWizard {
             case "server" {
                 return "not built yet -- an HTTP service (M8)"
             }
-            case "desktop" {
-                return "not built yet -- SDL2 through C++ (M9)"
-            }
         }
         return "not built yet"
     }
@@ -269,6 +266,9 @@ class StarterWizard {
             }
             case "ios" {
                 return "a Swift module inside a SwiftUI shell, built without Xcode"
+            }
+            case "desktop" {
+                return "an SDL2 window over a module compiled to C++"
             }
         }
         return ""

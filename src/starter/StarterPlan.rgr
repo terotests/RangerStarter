@@ -89,6 +89,17 @@ class PlanScript {
     def command:string ""
     def profile:string "core"
 
+    ; Whether CI should run this script. Most scripts are not for CI: a dev
+    ; server never exits, and an Android build wants an SDK the runner does not
+    ; have. A surface that CAN be exercised on a plain runner says so here, so
+    ; the workflow is assembled from the same list the project's own scripts come
+    ; from rather than from a table in the template.
+    def inCi:boolean false
+
+    ; A shell line the runner needs before the script will work -- installing a
+    ; system library, typically. Empty for anything that only needs node.
+    def ciSetup:string ""
+
     Constructor () {
     }
 

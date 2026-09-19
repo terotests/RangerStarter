@@ -210,27 +210,20 @@ class StarterPlanner {
                 hasTest = true
             }
         }
+        ; No surface claimed `start`, so the enabled profiles are asked in
+        ; registration order and the first with an answer wins. None of them can
+        ; do what a command line surface does; each does the nearest useful
+        ; thing, which beats "missing script".
         if (hasStart == false) {
-            if (cfg.isEnabled("web")) {
-                plan.addScript((PlanScript.entry("start" "npm run web:dev" "core")))
-                hasStart = true
-            }
-        }
-        ; A mobile-only project cannot be started by node, but `npm start` still
-        ; has to do the nearest useful thing rather than answer "missing script".
-        ; Android installs on a device or emulator, which is as close to "run it"
-        ; as a command line gets; iOS builds the bundle, because nothing here
-        ; launches a simulator.
-        if (hasStart == false) {
-            if (cfg.isEnabled("android")) {
-                plan.addScript((PlanScript.entry("start" "npm run android:install" "core")))
-                hasStart = true
-            }
-        }
-        if (hasStart == false) {
-            if (cfg.isEnabled("ios")) {
-                plan.addScript((PlanScript.entry("start" "npm run ios:build" "core")))
-                hasStart = true
+            def profiles2:StarterProfiles (StarterProfiles.registry())
+            for (profiles2.enabledFor(cfg)) profile:StarterProfile i {
+                if (hasStart == false) {
+                    def cmd:string (profile.startCommand(cfg))
+                    if ((strlen cmd) > 0) {
+                        plan.addScript((PlanScript.entry("start" cmd "core")))
+                        hasStart = true
+                    }
+                }
             }
         }
         if (hasTest == false) {
@@ -556,10 +549,6 @@ class StarterPlanner {
         plan.addFile((PlanFile.structured("package.json" (StarterPlanner.packageJson(cfg plan)) "core")))
         plan.addFile((PlanFile.structured("ranger.json" (StarterPlanner.rangerJson(cfg)) "core")))
         if (cfg.wantsGithubCi()) {
-            def names:[string]
-            for (plan.scriptsByName()) sc:PlanScript i {
-                push names sc.name
-            }
             def docsCheck:boolean false
             if (cfg.docsEnabled()) {
                 if (cfg.docsApi()) {
@@ -567,7 +556,7 @@ class StarterPlanner {
                 }
             }
             def multi:boolean (((array_length (cfg.allTargetIds())) > 1))
-            plan.addFile((PlanFile.generated(".github/workflows/ci.yml" (StarterTemplates.githubWorkflow(names docsCheck multi)) "core")))
+            plan.addFile((PlanFile.generated(".github/workflows/ci.yml" (StarterTemplates.githubWorkflow((plan.scriptsByName()) docsCheck multi)) "core")))
         }
     }
 

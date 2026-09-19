@@ -58,6 +58,10 @@ class ProfileWeb extends StarterProfile {
         return (cfg.optionOf(id "entry" "src/Web.rgr"))
     }
 
+    fn startCommand:string (cfg:StarterConfig) {
+        return "npm run web:dev"
+    }
+
     fn moduleNameOf:string (cfg:StarterConfig) {
         return (StarterText.stemName((this.entryOf(cfg))))
     }

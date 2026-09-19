@@ -68,6 +68,12 @@ class ProfileIos extends StarterProfile {
         return (cfg.optionOf(id "entry" "src/Shared.rgr"))
     }
 
+    ; Nothing here launches a simulator, so building the bundle is the most this
+    ; can honestly mean.
+    fn startCommand:string (cfg:StarterConfig) {
+        return "npm run ios:build"
+    }
+
     fn moduleNameOf:string (cfg:StarterConfig) {
         return (StarterText.stemName((this.entryOf(cfg))))
     }

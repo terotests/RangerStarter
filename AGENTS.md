@@ -59,7 +59,7 @@ ranger.project.json  ->  StarterConfig  ->  ProjectPlan  ->  FilePlan  ->  disk
 ```
 
 Everything left of the last arrow is pure -- no filesystem, no terminal, no
-process -- which is why `npm run starter:test` runs 369 checks over plans and
+process -- which is why `npm run starter:test` runs 423 checks over plans and
 merges without touching a disk, and why it runs on **three targets**:
 
 ```bash
@@ -109,6 +109,12 @@ node bin/ranger-starter.js init --name demo --surfaces android,ios \
 The two vocabularies do not overlap — Android has `phone`, iOS has `iphone` — so
 one list is routed to whichever surfaces know each name. A name nobody knows is
 an error, not a silent default.
+
+`desktop`, `android` and `ios` are three hosts for **one** module,
+`src/Shared.rgr`, compiled to C++, Kotlin and Swift. Desktop is the only one a
+plain CI runner can prove, and the generated workflow runs
+`npm run desktop:smoke` — thirty frames under `SDL_VIDEODRIVER=dummy` — after
+installing `libsdl2-dev`.
 
 Every command takes `--json`, **including the failures** — a `--json` run that
 answered prose on error would leave an agent parsing sentences, which is the

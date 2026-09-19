@@ -222,6 +222,14 @@ class StarterConfig {
             case "desktop" {
                 s.putKey("target" (JsonValue.fromText("cpp")))
                 s.putKey("runtime" (JsonValue.fromText("sdl2")))
+                ; The SAME module the mobile surfaces use. A window is a third
+                ; host for the application, not a third copy of it.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
+                ; `-cpp-single-thread` drops the atomics from reference
+                ; counting. It is faster and it is WRONG the moment a pointer is
+                ; copied across threads, so it is off unless somebody says
+                ; otherwise, in the file, where the choice is visible.
+                s.putKey("singleThread" (JsonValue.fromBool(false)))
             }
             case "android" {
                 s.putKey("target" (JsonValue.fromText("kotlin")))
@@ -391,6 +399,11 @@ class StarterConfig {
         return (s.getText(key fallback))
     }
 
+    fn flagOf:boolean (id:string key:string fallback:boolean) {
+        def s:JsonValue (this.surfaceOf(id))
+        return (s.getBool(key fallback))
+    }
+
     ; Every target any enabled surface asked for, deduplicated. Not sorted here:
     ; `StarterTargets.inTableOrder` does that, because the order belongs to the
     ; target table and not to the configuration.
@@ -535,6 +548,11 @@ class StarterConfig {
     fn setOption:void (id:string key:string value:string) {
         def s:JsonValue (this.surfaceForWrite(id))
         s.putKey(key (JsonValue.fromText(value)))
+    }
+
+    fn setFlag:void (id:string key:string value:boolean) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        s.putKey(key (JsonValue.fromBool(value)))
     }
 
     fn objectForWrite:JsonValue (key:string) {
