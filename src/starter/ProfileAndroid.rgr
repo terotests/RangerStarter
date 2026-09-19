@@ -208,6 +208,7 @@ class ProfileAndroid extends StarterProfile {
         plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
         plan.addFile((PlanFile.generated("platforms/android/settings.gradle.kts" (StarterTemplates.androidSettingsGradle(name)) id)))
         plan.addFile((PlanFile.generated("platforms/android/build.gradle.kts" (StarterTemplates.androidRootGradle()) id)))
+        plan.addFile((PlanFile.generated("platforms/android/gradle.properties" (StarterTemplates.androidGradleProperties()) id)))
         plan.addFile((PlanFile.generated("platforms/android/app/build.gradle.kts" (StarterTemplates.androidAppGradle(pkg devices className)) id)))
         plan.addFile((PlanFile.generated("platforms/android/app/src/main/AndroidManifest.xml" (StarterTemplates.androidManifest(name devices)) id)))
         plan.addFile((PlanFile.generated("platforms/android/gradle/wrapper/gradle-wrapper.properties" (StarterTemplates.androidWrapperProperties()) id)))
