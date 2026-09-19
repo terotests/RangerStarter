@@ -13,11 +13,11 @@
   },
   {
     "name": "04-unavailable",
-    "keys": "space down down space"
+    "keys": "space down down down space"
   },
   {
     "name": "05-targets",
-    "keys": "up up return"
+    "keys": "up up up return"
   },
   {
     "name": "06-targets-picked",

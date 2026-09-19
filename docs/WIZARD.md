@@ -53,7 +53,7 @@ independent dimensions, and the configuration stores them that way.
 
 ![the surfaces screen](wizard/03-surfaces.png)
 
-Pick as many as apply. Five of the seven are not built yet — and they are
+Pick as many as apply. Four of the seven are not built yet — and they are
 **shown**, with the milestone that will bring them, rather than hidden. Hiding
 them would hide the plan; offering them as selectable would let you build a
 configuration that fails to apply. So they are visible and refuse to be ticked:
@@ -119,6 +119,55 @@ and `doctor` as a diagnostic step.
 
 The answers, as the configuration about to be written. `←` goes back to any of
 them.
+
+---
+
+## What each surface generates
+
+| | |
+| --- | --- |
+| **Command line** | `src/Main.rgr`, a test that exits non-zero, `scripts/rgr.js`, and a build script per target |
+| **Library** | an entry point per ecosystem, and `package:<target>` for each target with a manifest — npm, pip, NuGet, Gradle/Dokka, SwiftPM, pub |
+| **Web** | `web/index.html`, `web/main.js`, a Ranger ES module compiled into `web/generated/`, and Vite |
+
+The web surface has three details worth knowing, each of which is a trap
+somebody would otherwise hit once:
+
+- `src/Web.rgr` has **no `main`**. `-esm` exports every class *and* calls `main`
+  at the bottom of the emitted file, so a `main` there would run on page load.
+- **`-esm` is not optional.** Without it the es6 target writes CommonJS, and the
+  failure arrives as a Vite error about `require` that reads like a bundler
+  problem rather than a missing compiler flag.
+- The compiled module lands **inside Vite's root**. A module outside it needs
+  `server.fs.allow`, and getting that wrong produces a 403 in dev that says
+  nothing useful.
+
+---
+
+## Driving it without the questionnaire
+
+The wizard needs a terminal and refuses a pipe. Everything it does is available
+as flags and JSON, and an agent should start with one call that answers what
+this build can actually do:
+
+```bash
+npx ranger-starter describe --json
+```
+
+That gives the commands and their flags, which surfaces this build can generate
+(as opposed to which ones the config file has slots for), the targets the
+installed compiler has, the skills it can install, and a configuration that
+works. Then:
+
+```bash
+npx ranger-starter init --name shopfront --surfaces cli,web --targets es6 --json
+npx ranger-starter plan --json      # the actions apply will perform
+npx ranger-starter apply --json
+npx ranger-starter doctor --json    # what this machine is missing
+```
+
+Every command takes `--json`, **including the failures**. Exit status is 0 for
+worked, 1 for a problem with the project, 2 for a problem with the command line.
 
 ---
 

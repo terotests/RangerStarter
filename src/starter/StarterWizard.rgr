@@ -262,6 +262,9 @@ class StarterWizard {
             case "library" {
                 return "a manifest for each ecosystem that has one"
             }
+            case "web" {
+                return "a page, and a Ranger ES module it imports, served by Vite"
+            }
         }
         return ""
     }

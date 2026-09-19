@@ -8,13 +8,13 @@
 
     [x] Command line            an entry point and a way to run it
     [ ] Library                 a manifest for each ecosystem that ha…
-  ▸  –  Web                     not built yet -- Vite over a Ranger E…
-     –  Server                  not built yet -- an HTTP service (M8)
+    [ ] Web                     a page, and a Ranger ES module it imp…
+  ▸  –  Server                  not built yet -- an HTTP service (M8)
      –  Desktop (SDL2)          not built yet -- SDL2 through C++ (M9)
      –  Android                 not built yet -- a Kotlin module in a…
      –  iOS                     not built yet -- a Swift module over …
 
-  ×  Web is not built yet -- Vite over a Ranger ES module (M8)
+  ×  Server is not built yet -- an HTTP service (M8)
 
   ────────────────────────────────────────────────────────────────────────
   ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

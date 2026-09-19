@@ -1,0 +1,144 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileWeb -- a page, and a Ranger module it imports.
+;
+;     Ranger  ->  ES module  ->  plain HTML  ->  Vite
+;
+; No React, no Vue, no Svelte. Framework adapters are a later profile, and
+; starting with one would put a framework between Ranger and the page on the
+; first day -- which is the opposite of what a starter for THIS language should
+; demonstrate.
+;
+; THREE THINGS THAT ARE NOT OBVIOUS, and each of them is a trap somebody would
+; otherwise hit once:
+;
+;   * The web surface has its OWN entry point, `src/Web.rgr`, with no `main`.
+;     `-esm` exports every class AND calls `main` at the bottom of the emitted
+;     file, so compiling the command line entry for the browser would run the
+;     program on page load.
+;   * `-esm` is not optional. Without it the es6 target writes CommonJS, and the
+;     failure arrives as a Vite error about `require` that reads like a bundler
+;     problem rather than a missing compiler flag.
+;   * The compiled module lands INSIDE Vite's root (`web/generated/`). A module
+;     outside the root needs `server.fs.allow`, and getting that wrong produces a
+;     403 in dev that says nothing useful.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileWeb extends StarterProfile {
+
+    Constructor () {
+        id = "web"
+    }
+
+    fn defaultTarget:string () {
+        return "es6"
+    }
+
+    ; A browser runs JavaScript. `typescript` is the same compiler output with
+    ; type annotations, and Vite strips those, so both are allowed and nothing
+    ; else is.
+    fn targetsAllowed:[string] () {
+        def out:[string]
+        push out "es6"
+        push out "typescript"
+        return out
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+        def tooling:string (cfg.optionOf(id "tooling" "vite"))
+        if (tooling != "vite") {
+            plan.addProblem((StarterProblem.about("surfaces.web.tooling" ("`" + tooling + "` is not a web toolchain this version knows. It is `vite`."))))
+        }
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "entry" "src/Web.rgr"))
+    }
+
+    fn moduleNameOf:string (cfg:StarterConfig) {
+        return (StarterText.stemName((this.entryOf(cfg))))
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def className:string (StarterText.pascalCase(moduleName))
+        def name:string (cfg.projectName())
+
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+        plan.addFile((PlanFile.generated("vite.config.js" (StarterTemplates.viteConfig()) id)))
+
+        ; The page and its script are seeds: everything about a page is the
+        ; author's the moment it exists.
+        plan.addFile((PlanFile.seed("web/index.html" (StarterTemplates.webIndexHtml(name)) id)))
+        plan.addFile((PlanFile.seed("web/main.js" (StarterTemplates.webMainJs(className moduleName)) id)))
+        plan.addFile((PlanFile.seed(entry (StarterTemplates.webSeed(name className)) id)))
+
+        plan.addIgnore("web/generated/")
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def flags:string " -- -esm"
+        def chosen:[string] (this.myTargets(cfg targets))
+        if (StarterText.includes(chosen "typescript")) {
+            flags = " -- -esm -typescript"
+        }
+        def compile:string ("node scripts/rgr.js build " + entry + " -d=web/generated" + flags)
+        plan.addScript((PlanScript.entry("web:compile" compile id)))
+        plan.addScript((PlanScript.entry("web:dev" "npm run web:compile && vite" id)))
+        plan.addScript((PlanScript.entry("web:build" "npm run web:compile && vite build" id)))
+        plan.addScript((PlanScript.entry("web:preview" "vite preview" id)))
+    }
+
+    fn contributeDependencies:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addDependency((PlanDependency.dev("vite" "^6.0.0" id)))
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def l:[string]
+        push l "## Web"
+        push l ""
+        push l ("Ranger source: `" + entry + "`, compiled to an ES module in")
+        push l ("`web/generated/" + moduleName + ".js` and imported by `web/main.js`. The page is")
+        push l "`web/index.html`, which is also Vite's root."
+        push l ""
+        push l "```bash"
+        push l "npm run web:dev      # compile, then serve with hot reload"
+        push l "npm run web:build    # compile, then build into build/web-dist"
+        push l "npm run web:preview  # serve what web:build produced"
+        push l "```"
+        push l ""
+        push l "Three things worth knowing before changing any of this:"
+        push l ""
+        push l ("- **`" + entry + "` has no `main`.** `-esm` exports every class AND calls `main`")
+        push l "  at the bottom of the emitted file, so a `main` here would run on page load."
+        push l "- **`-esm` is not optional.** Without it the es6 target writes CommonJS, and"
+        push l "  the failure arrives as a Vite error about `require` that reads like a"
+        push l "  bundler problem rather than a missing compiler flag."
+        push l "- **`web/generated/` is generated and gitignored.** It is inside Vite's root"
+        push l "  on purpose: a module outside the root needs `server.fs.allow`, and getting"
+        push l "  that wrong produces a 403 in dev that says nothing useful."
+        push l ""
+        push l "`web/index.html` and `web/main.js` were written once and are yours; nothing"
+        push l "regenerates them."
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-web" 320 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        ; Vite is a node_modules directory, not a program on PATH. Asking `npx`
+        ; about it answers an npm error when it is absent, which a version reader
+        ; cannot tell from a version -- the same trap the compiler check hit.
+        plan.addCheck((PlanCheck.file("Web" "vite" "node_modules/vite/package.json" "version" "`npm install` fetches it. `npm run web:compile` needs only the Ranger compiler; serving and bundling need this.")))
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-build")
+    }
+}

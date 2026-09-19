@@ -86,10 +86,12 @@ class StarterConfigLoad {
 
 class StarterConfig {
 
-    def root:JsonValue
+    ; Inline, not assigned in the constructor: a field with no initialiser reads
+    ; back as OPTIONAL even when every path sets it, and this one is passed to
+    ; things that expect a `JsonValue`.
+    def root:JsonValue (JsonValue.newObject())
 
     Constructor () {
-        root = (JsonValue.newObject())
     }
 
     ; --- the shape of the file ------------------------------------------------
@@ -208,7 +210,11 @@ class StarterConfig {
             case "web" {
                 s.putKey("target" (JsonValue.fromText("es6")))
                 s.putKey("tooling" (JsonValue.fromText("vite")))
-                s.putKey("modules" (JsonValue.fromText("esm")))
+                ; Its OWN entry point, not the command line one. `-esm` exports the
+                ; classes and still calls `main` at the bottom of the file, so
+                ; compiling a program with a `main` for the browser would run it on
+                ; page load. A web module has no `main`.
+                s.putKey("entry" (JsonValue.fromText("src/Web.rgr")))
             }
             case "server" {
                 s.putKey("target" (JsonValue.fromText("es6")))

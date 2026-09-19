@@ -11,13 +11,14 @@
 ; which profile wins a name collision -- is a property of the configuration
 ; rather than of this file's history.
 ;
-; WHAT IS NOT HERE YET: web, server, desktop, android and ios. The configuration
+; WHAT IS NOT HERE YET: server, desktop, android and ios. The configuration
 ; already has their shape, the wizard will offer them, and enabling one is an
 ; error that says so rather than a surface that silently does nothing. See
 ; PLAN_STARTER.md milestones M8 to M11.
 
 Import "ProfileCli.rgr"
 Import "ProfileLibrary.rgr"
+Import "ProfileWeb.rgr"
 
 class StarterProfiles {
 
@@ -26,6 +27,7 @@ class StarterProfiles {
     Constructor () {
         push list (new ProfileCli())
         push list (new ProfileLibrary())
+        push list (new ProfileWeb())
     }
 
     sfn registry:StarterProfiles () {

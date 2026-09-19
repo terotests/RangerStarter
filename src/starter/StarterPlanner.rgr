@@ -64,6 +64,7 @@ class StarterPlanner {
         }
 
         StarterPlanner.addCoreScripts(cfg out)
+        StarterPlanner.ensureStartAndTest(cfg out profiles)
         StarterPlanner.addCoreChecks(cfg out targets)
         StarterPlanner.addDocs(cfg out)
         StarterPlanner.addSkills(cfg out assets)
@@ -161,9 +162,18 @@ class StarterPlanner {
 
     ; --- the entry point every surface agrees on ------------------------------
 
+    ; The entry point `ranger.json` names, and the one a core script falls back
+    ; to. A project without a command line surface has no `src/Main.rgr`, so
+    ; naming one would put a path in `ranger.json` that is not there.
     sfn entryOf:string (cfg:StarterConfig) {
         if (cfg.isLibrary()) {
             return ("src/" + (StarterText.pascalCase((cfg.projectName()))) + ".rgr")
+        }
+        if (cfg.isEnabled("cli")) {
+            return (cfg.optionOf("cli" "entry" "src/Main.rgr"))
+        }
+        if (cfg.isEnabled("web")) {
+            return (cfg.optionOf("web" "entry" "src/Web.rgr"))
         }
         return (cfg.optionOf("cli" "entry" "src/Main.rgr"))
     }
@@ -178,6 +188,36 @@ class StarterPlanner {
         plan.addScript((PlanScript.entry("setup" "npx ranger-starter configure" "core")))
         plan.addScript((PlanScript.entry("plan" "npx ranger-starter plan" "core")))
         plan.addScript((PlanScript.entry("doctor" "npx ranger-starter doctor" "core")))
+    }
+
+    ; `npm start` and `npm test` are the two commands everybody types without
+    ; reading anything, and a generated project where they answer "missing
+    ; script" looks broken. The command line profile sets both; a project without
+    ; that surface gets the closest thing its surfaces can offer.
+    sfn ensureStartAndTest:void (cfg:StarterConfig plan:ProjectPlan profiles:StarterProfiles) {
+        def hasStart:boolean false
+        def hasTest:boolean false
+        for plan.scripts sc:PlanScript i {
+            if (sc.name == "start") {
+                hasStart = true
+            }
+            if (sc.name == "test") {
+                hasTest = true
+            }
+        }
+        if (hasStart == false) {
+            if (cfg.isEnabled("web")) {
+                plan.addScript((PlanScript.entry("start" "npm run web:dev" "core")))
+                hasStart = true
+            }
+        }
+        if (hasTest == false) {
+            ; Not a test, and it does not pretend to be: it is the compiler
+            ; saying the project still type-checks. A surface that brings a real
+            ; test replaces it.
+            def entry:string (StarterPlanner.entryOf(cfg))
+            plan.addScript((PlanScript.entry("test" ("node scripts/rgr.js check " + entry) "core")))
+        }
     }
 
     sfn addCoreChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
@@ -423,9 +463,23 @@ class StarterPlanner {
         push setup "npm run setup -- --apply"
         push setup "```"
         push setup ""
-        push setup "`npm run setup` with no arguments asks the questions interactively. An agent"
-        push setup "should edit the JSON and use `--apply`: there is no questionnaire to answer,"
-        push setup "and `npm run plan` prints exactly what `--apply` will do."
+        push setup "`npm run setup` with no arguments asks the questions interactively -- it"
+        push setup "needs a terminal and refuses a pipe. An agent should edit the JSON instead:"
+        push setup "there is no questionnaire to answer, and `npm run plan` prints exactly what"
+        push setup "`--apply` will do."
+        push setup ""
+        push setup "Every command takes `--json`, including the failures. One call gives the"
+        push setup "commands, the surfaces this build can generate, the targets the installed"
+        push setup "compiler has, and a configuration that works:"
+        push setup ""
+        push setup "```bash"
+        push setup "npx ranger-starter describe --json"
+        push setup "npx ranger-starter plan --json      # the actions apply will perform"
+        push setup "npx ranger-starter doctor --json    # what this machine is missing"
+        push setup "```"
+        push setup ""
+        push setup "Exit status: 0 worked, 1 a problem with the project, 2 a problem with the"
+        push setup "command line."
         push setup ""
         push setup "Generation is idempotent. Running it twice changes nothing the second time."
         plan.addSection((PlanSection.about("AGENTS.md" "agents-setup" 800 (StarterText.joinWith(setup "\n")) "core")))
@@ -476,7 +530,7 @@ class StarterPlanner {
     ; --- core files -----------------------------------------------------------
 
     sfn addCoreFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
-        plan.addFile((PlanFile.generated(".gitignore" (StarterTemplates.gitignore()) "core")))
+        plan.addFile((PlanFile.generated(".gitignore" (StarterTemplates.gitignore(plan.ignores)) "core")))
         plan.addFile((PlanFile.structured("package.json" (StarterPlanner.packageJson(cfg plan)) "core")))
         plan.addFile((PlanFile.structured("ranger.json" (StarterPlanner.rangerJson(cfg)) "core")))
         if (cfg.wantsGithubCi()) {

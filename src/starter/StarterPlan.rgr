@@ -270,6 +270,12 @@ class ProjectPlan {
     def checks:[PlanCheck]
     def problems:[StarterProblem]
 
+    ; Paths a profile wants gitignored. The `.gitignore` is a core file, so a
+    ; profile that needed a line in it would otherwise have to rewrite the whole
+    ; thing -- and two profiles wanting a line each would take turns clobbering
+    ; one another.
+    def ignores:[string]
+
     ; The skills the enabled profiles asked for, by name. Not every name exists
     ; yet; `skills: "auto"` installs what does and says nothing about the rest.
     def skills:[string]
@@ -363,6 +369,12 @@ class ProjectPlan {
 
     fn addCheck:void (check:PlanCheck) {
         push checks check
+    }
+
+    fn addIgnore:void (path:string) {
+        if ((StarterText.includes(ignores path)) == false) {
+            push ignores path
+        }
     }
 
     fn addSkill:void (name:string) {

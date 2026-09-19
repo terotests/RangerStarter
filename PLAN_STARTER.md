@@ -1,6 +1,7 @@
 # PLAN_STARTER — RangerStarter as the Ranger project configurator
 
-Status: **M0 to M5 and M7 (the wizard) are implemented and tested.** See
+Status: **M0 to M5, M7 (the wizard) and the web half of M6 are implemented and
+tested.** See
 §20, at the end, for exactly what exists, what it is verified against, and what
 changed from this design once it met the compiler. §1 to §19 are the design as
 originally written and are not edited to match.
@@ -1158,10 +1159,60 @@ Getting it running cost two compiler bugs, both now fixed upstream
 key OBJECT; and a key variable named anything else was emitted as `const`, so the
 first keypress died with `TypeError: Assignment to constant variable`.
 
-### 20.7 What is left
+### 20.7 The web surface
 
-M6 -- web, server, desktop, Android, iOS -- is untouched. Enabling one of those
-surfaces is an error that names the milestone; the wizard shows them, greyed, with
-the same note. The starter does not yet document its own public API with
-`doc { … }` blocks, though a generated project's seed does and its `docs:check`
-enforces it. Publishing to npm (M12) is not done.
+`ProfileWeb` generates a page, a Ranger ES module it imports, and Vite. Verified
+by generating a project, installing, building it, and LOADING THE BUILT PAGE in a
+browser -- and the dev server too, because that is the path with the
+`server.fs.allow` trap.
+
+Three details, each a trap somebody would otherwise hit once:
+
+* **The web surface has its own entry point**, `src/Web.rgr`, with no `main`.
+  `-esm` exports every class AND calls `main` at the bottom of the emitted file,
+  so compiling the command line entry for the browser would run the program on
+  page load. Checked, not assumed.
+* **`-esm` is not optional.** Without it the es6 target writes CommonJS and the
+  failure arrives as a Vite error about `require`.
+* **The compiled module lands inside Vite's root** (`web/generated/`), because a
+  module outside the root needs `server.fs.allow` and getting that wrong is a 403
+  that says nothing. That needed `ProjectPlan.addIgnore`: the `.gitignore` is a
+  core file, and a profile that wanted a line in it would otherwise rewrite the
+  whole thing.
+
+A web-only project also exposed two gaps that were nothing to do with the web:
+`npm start` and `npm test` are what everybody types without reading anything, and
+a project without a command line surface had neither. The core supplies both now
+-- `start` runs the dev server, and `test` type-checks without pretending to be a
+test.
+
+### 20.8 Driving it as an agent
+
+`describe --json` is one call that answers the commands and their flags, which
+surfaces this BUILD can generate, the targets the installed compiler has, the
+skills it can install, and a configuration that works. It reads the profile
+registry and the target table rather than a hand-kept list, so it cannot claim a
+surface `apply` would refuse -- a test asserts that, and that the example it
+prints plans cleanly.
+
+Every command takes `--json`, including the failures: a `--json` run that
+answered prose on error would leave an agent parsing sentences. Exit status is 0
+worked, 1 a problem with the project, 2 a problem with the command line.
+
+### 20.9 What is left
+
+The server, desktop, Android and iOS surfaces. Enabling one is an error that
+names the milestone; the wizard shows them, greyed, with the same note.
+
+**The server surface is blocked on a release, not on design.** Ranger's
+`@(HttpServer)` annotation with `@(GET "/path")` methods now works on es6 as well
+as Go -- that was Ranger ISSUES.md #93, fixed in this work: the es6 template
+emitted `server.start(port)`, a call to a method nothing generated, so every
+JavaScript HTTP server compiled cleanly and died on its first statement. The fix
+is a new writer class, so it cannot be hand-patched into the published
+`dist/rgrc.js`; a generated project uses the npm compiler, so the server profile
+has to wait for `npm run build:dist` and a release.
+
+The starter still does not document its own public API with `doc { … }` blocks,
+though a generated project's seed does and its `docs:check` enforces it.
+Publishing to npm (M12) is not done.

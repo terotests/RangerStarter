@@ -24,6 +24,7 @@ Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
 Import "StarterWizardView.rgr"
 Import "StarterDoctor.rgr"
+Import "StarterDescribe.rgr"
 Import "StarterHost.rgr"
 
 ; A tiny argv reader. `--flag`, `--key value` and `--key=value`, and one
@@ -198,6 +199,36 @@ class StarterMain {
         return (StarterConfig.load((host.readText(path))))
     }
 
+    ; Under `--json` a failure has to be JSON too. An agent that gets a sentence
+    ; where it expected an object has to parse prose to find out what went wrong,
+    ; which is the thing `--json` exists to avoid.
+    sfn fail:int (args:StarterArgs message:string problems:[StarterProblem]) {
+        if ((args.has("json")) == false) {
+            print ("ranger-starter: " + message)
+            StarterMain.printProblems(problems)
+            return 1
+        }
+        def root:JsonValue (JsonValue.newObject())
+        root.putKey("ok" (JsonValue.fromBool(false)))
+        root.putKey("error" (JsonValue.fromText(message)))
+        def list:JsonValue (JsonValue.newArray())
+        for problems p:StarterProblem i {
+            def entry:JsonValue (JsonValue.newObject())
+            entry.putKey("severity" (JsonValue.fromText(p.severity)))
+            entry.putKey("path" (JsonValue.fromText(p.path)))
+            entry.putKey("message" (JsonValue.fromText(p.message)))
+            list.addItem(entry)
+        }
+        root.putKey("problems" list)
+        print (root.asText())
+        return 1
+    }
+
+    sfn noProblems:[StarterProblem] () {
+        def out:[StarterProblem]
+        return out
+    }
+
     sfn printProblems:void (problems:[StarterProblem]) {
         for problems p:StarterProblem i {
             print ("  " + (StarterText.padRight(p.severity 8)) + (p.asLine()))
@@ -210,17 +241,14 @@ class StarterMain {
         def path:string (args.value("config" (StarterMain.configPath())))
         def load:StarterConfigLoad (StarterMain.loadConfig(host path))
         if (load.ok == false) {
-            print ("ranger-starter: " + load.problem)
-            return 1
+            return (StarterMain.fail(args load.problem (StarterMain.noProblems())))
         }
         def cfg:StarterConfig load.config
         def targets:StarterTargets (StarterMain.loadTargets(host))
         def assets:StarterAssets (host.loadAssets())
         def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
         if (project.hasErrors()) {
-            print "ranger-starter: this configuration cannot be generated."
-            StarterMain.printProblems(project.problems)
-            return 1
+            return (StarterMain.fail(args "this configuration cannot be generated" project.problems))
         }
         def disk:DiskState (host.snapshot(project))
         def filePlan:FilePlan (StarterGenerator.plan(project disk))
@@ -277,6 +305,17 @@ class StarterMain {
             host.dryRun = true
         }
         def report:ApplyReport (host.apply(filePlan (args.has("no-install") == false)))
+        if (args.has("json")) {
+            def root:JsonValue (filePlan.asJson())
+            root.putKey("applied" (JsonValue.fromBool(true)))
+            root.putKey("created" (JsonValue.fromInt(report.created)))
+            root.putKey("updated" (JsonValue.fromInt(report.updated)))
+            root.putKey("removed" (JsonValue.fromInt(report.removed)))
+            root.putKey("unchanged" (JsonValue.fromInt(report.unchanged)))
+            root.putKey("kept" (JsonValue.fromInt(report.kept)))
+            print (root.asText())
+            return 0
+        }
         print (filePlan.asText())
         print (filePlan.problemsText())
         print (report.summary())
@@ -297,11 +336,14 @@ class StarterMain {
     sfn commandInit:int (host:StarterHost args:StarterArgs) {
         def path:string (args.value("config" (StarterMain.configPath())))
         if (host.exists(path)) {
-            print ("ranger-starter: `" + path + "` already exists. Use `configure` to change it, or `apply` to generate from it.")
-            return 1
+            return (StarterMain.fail(args ("`" + path + "` already exists. Use `configure` to change it, or `apply` to generate from it.") (StarterMain.noProblems())))
         }
         def name:string (args.value("name" ""))
         if ((strlen name) == 0) {
+            if (args.has("json")) {
+                def why:string "init needs --name <name>. Run `ranger-starter describe --json` for the commands, the surfaces this build can generate, and an example configuration."
+                return (StarterMain.fail(args why (StarterMain.noProblems())))
+            }
             print "ranger-starter: init needs `--name <name>`."
             print "  ranger-starter init --name northwind --surfaces cli --targets es6,go --docs"
             return 2
@@ -347,10 +389,21 @@ class StarterMain {
         cfg.setAgents(true wantsClaude "auto")
 
         host.writeText(path (cfg.asText()))
-        print ("ranger-starter: wrote " + path)
         if (args.has("apply")) {
+            if ((args.has("json")) == false) {
+                print ("ranger-starter: wrote " + path)
+            }
             return (StarterMain.commandApply(host args))
         }
+        if (args.has("json")) {
+            def root:JsonValue (JsonValue.newObject())
+            root.putKey("ok" (JsonValue.fromBool(true)))
+            root.putKey("wrote" (JsonValue.fromText(path)))
+            root.putKey("config" cfg.root)
+            print (root.asText())
+            return 0
+        }
+        print ("ranger-starter: wrote " + path)
         print "Review it, then: ranger-starter plan  /  ranger-starter apply"
         return 0
     }
@@ -649,6 +702,27 @@ class StarterMain {
         return 0
     }
 
+    sfn commandDescribe:int (host:StarterHost args:StarterArgs) {
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        def assets:StarterAssets (host.loadAssets())
+        def profiles:StarterProfiles (StarterProfiles.registry())
+        def root:JsonValue (StarterDescribe.describe(profiles targets (assets.skillNames())))
+        if ((args.has("json")) == false) {
+            ; It is a machine-readable command. Saying so beats printing a
+            ; reformatted version of the same thing that then drifts from it.
+            print "ranger-starter describe: this command answers JSON."
+            print ""
+            print "  ranger-starter describe --json"
+            print ""
+            print "It is one call that gives the commands and their flags, the surfaces this"
+            print "build can actually generate, the targets the installed compiler has, the"
+            print "skills it can install, and a configuration that works."
+            return 0
+        }
+        print (root.asText())
+        return 0
+    }
+
     sfn usage:void () {
         print "ranger-starter -- configure and generate a Ranger project"
         print ""
@@ -660,11 +734,16 @@ class StarterMain {
         print "  apply      write it. --no-install to skip npm install, --dry-run to pretend"
         print "  doctor     can this machine build what is configured?"
         print "  targets    what the installed compiler supports. --json for data"
+        print "  describe   the commands, surfaces, targets and skills, as JSON"
         print ""
         print "  --config <path>   a configuration other than ranger.project.json"
         print ""
         print "`ranger.project.json` is the source of truth. An agent should edit it and run"
-        print "`plan` then `apply`; there is no questionnaire to answer."
+        print "`plan` then `apply`; there is no questionnaire to answer. Every command takes"
+        print "`--json`; start with `ranger-starter describe --json`."
+        print ""
+        print "Exit status: 0 worked, 1 a problem with the project, 2 a problem with the"
+        print "command line."
     }
 
     sfn m@(main):void () {
@@ -699,6 +778,9 @@ class StarterMain {
             }
             case "targets" {
                 status = (StarterMain.commandTargets(host args))
+            }
+            case "describe" {
+                status = (StarterMain.commandDescribe(host args))
             }
             case "help" {
                 StarterMain.usage()

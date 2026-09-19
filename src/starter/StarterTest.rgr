@@ -22,6 +22,7 @@ Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
 Import "StarterDoctor.rgr"
 Import "StarterWizardView.rgr"
+Import "StarterDescribe.rgr"
 Import "StarterAssets.rgr"
 
 class StarterCheck {
@@ -527,12 +528,12 @@ class StarterTest {
     ; A surface with no profile is an error, not a silent omission.
     sfn testMissingProfileIsAnError:void (t:StarterCheck) {
         def cfg:StarterConfig (StarterTest.cliConfig())
-        cfg.setEnabled("web" true)
+        cfg.setEnabled("server" true)
         def project:ProjectPlan (StarterTest.projectFor(cfg))
         t.isTrue("enabling a surface that is not built yet is an error" (project.hasErrors()))
         def said:boolean false
         for project.problems p:StarterProblem i {
-            if (p.path == "surfaces.web") {
+            if (p.path == "surfaces.server") {
                 said = true
             }
         }
@@ -854,8 +855,9 @@ class StarterTest {
     sfn testWizardUnavailableSurface:void (t:StarterCheck) {
         def w:StarterWizard (StarterTest.freshWizard())
         StarterTest.press(w "d e m o return return")
-        ; cursor 0 is cli, 2 is web -- which has no profile in this build.
-        StarterTest.press(w "down down space")
+        ; cursor 0 is cli; the first surface with no profile in this build is
+        ; `server`, at 3.
+        StarterTest.press(w "down down down space")
         def q:WizardQuestion (w.current())
         t.eqStr("it is still the surfaces question" q.id "surfaces")
         t.isTrue("and it says the surface is not built yet" (contains q.problem "not built yet"))
@@ -865,6 +867,170 @@ class StarterTest {
         StarterTest.press(w "return")
         def stillSurfaces:WizardQuestion (w.current())
         t.eqStr("and it will not continue with nothing chosen" stillSurfaces.id "surfaces")
+    }
+
+    ; --- what an agent reads --------------------------------------------------
+
+    ; `describe --json` is the one call an agent makes before doing anything, so
+    ; what it says has to come from the same registries the tool itself reads --
+    ; not from a hand-kept list that drifts a version later.
+    sfn testDescribe:void (t:StarterCheck) {
+        def profiles:StarterProfiles (StarterProfiles.registry())
+        def root:JsonValue (StarterDescribe.describe(profiles (StarterTest.bundled()) ((StarterTest.assets()).skillNames())))
+        t.eqInt("it is versioned" (root.getInt("schema" 0)) 1)
+        t.eqStr("and names the file it is about" (root.getText("configFile" "")) "ranger.project.json")
+
+        def commands:JsonValue (root.getArray("commands"))
+        def names:[string]
+        for commands.items c:JsonValue i {
+            push names (c.getText("name" ""))
+        }
+        t.eqList("every command is listed" (StarterText.sorted(names)) "apply,configure,describe,doctor,init,plan,targets")
+
+        ; A surface is described as available exactly when a profile exists for
+        ; it, so this cannot claim something `apply` would refuse.
+        def surfaces:JsonValue (root.getArray("surfaces"))
+        def available:[string]
+        def unavailable:[string]
+        for surfaces.items sf:JsonValue i {
+            def sid:string (sf.getText("id" ""))
+            if (sf.getBool("available" false)) {
+                push available sid
+            } {
+                push unavailable sid
+                t.isTrue(("an unavailable surface says why: " + sid) ((strlen (sf.getText("why" ""))) > 0))
+            }
+        }
+        t.eqList("the surfaces this build generates" available "cli,library,web")
+        t.eqList("and the ones it does not" unavailable "server,desktop,android,ios")
+        t.eqInt("all seven are described either way" ((array_length available) + (array_length unavailable)) 7)
+
+        ; The target list carries the one fact that breaks a generated command
+        ; when an agent gets it wrong.
+        def targets:JsonValue (root.getObject("targets"))
+        t.eqStr("the table says where it came from" (targets.getText("source" "")) "bundled")
+        def list:JsonValue (targets.getArray("list"))
+        def sawVariant:boolean false
+        for list.items entry:JsonValue i {
+            if ((entry.getText("id" "")) == "typescript") {
+                sawVariant = true
+                t.eqStr("typescript is marked as a variant, not a -l= value" (entry.getText("variantOf" "")) "es6")
+            }
+        }
+        t.isTrue("the variant is described" sawVariant)
+
+        t.eqList("the skills it can install" (root.getStrings("skills")) "ranger-build,ranger-lang")
+
+        ; The example has to be a configuration that actually plans, or it is
+        ; worse than no example.
+        def example:JsonValue (root.getObject("example"))
+        def cfg (new StarterConfig())
+        cfg.root = example
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.isFalse("and the example configuration plans cleanly" (project.hasErrors()))
+    }
+
+    ; --- the web surface ------------------------------------------------------
+
+    sfn webConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        def ts:[string]
+        push ts "es6"
+        cfg.setTargets("web" ts)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testWebSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.webConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("a web-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "doctor,plan,setup,start,test,web:build,web:compile,web:dev,web:preview")
+
+        ; `npm start` and `npm test` are what everybody types without reading
+        ; anything; a project where they answer "missing script" looks broken.
+        t.eqStr("start runs the dev server" (StarterTest.commandOf(project "start")) "npm run web:dev")
+        t.eqStr("and test type-checks, without pretending to be a test" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Web.rgr")
+
+        ; `-esm` is not optional: without it the es6 target writes CommonJS and
+        ; Vite fails with an error about `require` that reads like a bundler bug.
+        def compile:string (StarterTest.commandOf(project "web:compile"))
+        t.isTrue("the module is compiled as ESM" (contains compile "-esm"))
+        t.isTrue("into Vite's own root" (contains compile "-d=web/generated"))
+
+        def vite@(optional):PlanFile (project.fileAt("vite.config.js"))
+        t.isTrue("a vite config is written" ((null? vite) == false))
+        if ((null? vite) == false) {
+            def f:PlanFile (unwrap vite)
+            t.isTrue("rooted at web/" (contains f.contents "root: \"web\""))
+        }
+
+        ; The compiled module lives inside the tree rather than under build/, so
+        ; the profile has to say so -- the .gitignore is a core file.
+        t.isTrue("the generated module is gitignored" (StarterText.includes(project.ignores "web/generated/")))
+        def ignore@(optional):PlanFile (project.fileAt(".gitignore"))
+        if ((null? ignore) == false) {
+            def g:PlanFile (unwrap ignore)
+            t.isTrue("and the line is in the file" (contains g.contents "web/generated/"))
+            t.isTrue("beside the core entries" (contains g.contents "node_modules/"))
+        }
+
+        def seed@(optional):PlanFile (project.fileAt("src/Web.rgr"))
+        t.isTrue("the web entry is planned" ((null? seed) == false))
+        if ((null? seed) == false) {
+            def sd:PlanFile (unwrap seed)
+            t.isTrue("as a seed, not a generated file" sd.isSeed)
+            ; `-esm` exports the classes AND calls `main` at the bottom, so a
+            ; `main` in a web module would run on page load.
+            t.isFalse("with no main" (contains sd.contents "@(main)"))
+        }
+
+        def dep:boolean false
+        for (project.dependenciesByName()) d:PlanDependency i {
+            if (d.name == "vite") {
+                dep = true
+                t.isTrue("vite is a dev dependency" d.isDev)
+            }
+        }
+        t.isTrue("vite is depended on" dep)
+    }
+
+    ; Both surfaces at once: the command line keeps `start` and `test`, and the
+    ; two entry points do not collide.
+    sfn testWebAndCliTogether:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("web" true)
+        def webTargets:[string]
+        push webTargets "es6"
+        cfg.setTargets("web" webTargets)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("it plans cleanly" (project.hasErrors()))
+        t.eqStr("the command line still owns start" (StarterTest.commandOf(project "start")) "node scripts/rgr.js run src/Main.rgr")
+        t.eqStr("and test" (StarterTest.commandOf(project "test")) "node scripts/rgr.js run src/MainTest.rgr")
+        t.isTrue("the web scripts are there too" ((strlen (StarterTest.commandOf(project "web:dev"))) > 0))
+        def cliSeed@(optional):PlanFile (project.fileAt("src/Main.rgr"))
+        def webSeed@(optional):PlanFile (project.fileAt("src/Web.rgr"))
+        t.isTrue("both entry points are planned" (((null? cliSeed) == false) && ((null? webSeed) == false)))
+    }
+
+    sfn testWebRejectsAnImpossibleTarget:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.webConfig())
+        def ts:[string]
+        push ts "go"
+        cfg.setTargets("web" ts)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isTrue("a browser cannot run Go" (project.hasErrors()))
+
+        def tooling:StarterConfig (StarterTest.webConfig())
+        tooling.setOption("web" "tooling" "webpack")
+        def p2:ProjectPlan (StarterTest.projectFor(tooling))
+        t.isTrue("and only vite is known" (p2.hasErrors()))
     }
 
     sfn testWizardSkipsIrrelevantQuestions:void (t:StarterCheck) {
@@ -1024,6 +1190,10 @@ class StarterTest {
         StarterTest.testVersionReading(t)
         StarterTest.testDoctorVerdicts(t)
         StarterTest.testCompilerCheckIsAFileCheck(t)
+        StarterTest.testDescribe(t)
+        StarterTest.testWebSurface(t)
+        StarterTest.testWebAndCliTogether(t)
+        StarterTest.testWebRejectsAnImpossibleTarget(t)
         StarterTest.testWizardWalk(t)
         StarterTest.testWizardRefusesABadName(t)
         StarterTest.testWizardUnavailableSurface(t)

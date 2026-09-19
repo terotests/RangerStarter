@@ -83,13 +83,28 @@ pure — `render` answers lines, `onKey` changes state, and the host only clears
 the screen and prints. That is what makes the wizard testable from a key script
 and what makes the screenshots generated rather than captured by hand.
 
-Driving it without a questionnaire, which is what an agent should do:
+Driving it without a questionnaire, which is what an agent should do. Start with
+`describe`: it is one call that answers the commands and their flags, the
+surfaces this build can actually generate (as opposed to the ones the config file
+has slots for), the targets the installed compiler has, the skills it can
+install, and a configuration that works.
 
 ```bash
-node bin/ranger-starter.js init --name demo --surfaces cli --targets es6,go --docs
-node bin/ranger-starter.js plan      # what would change; writes nothing
-node bin/ranger-starter.js apply
+node bin/ranger-starter.js describe --json
+node bin/ranger-starter.js init --name demo --surfaces cli,web --targets es6,go --docs --json
+node bin/ranger-starter.js plan --json      # the actions apply will perform
+node bin/ranger-starter.js apply --json
+node bin/ranger-starter.js doctor --json    # what this machine is missing
 ```
+
+Every command takes `--json`, **including the failures** — a `--json` run that
+answered prose on error would leave an agent parsing sentences, which is the
+thing the flag exists to avoid. Exit status is 0 for worked, 1 for a problem
+with the project, 2 for a problem with the command line.
+
+`describe` reads the profile registry and the target table, not a hand-kept
+list, so a surface it reports as available is one `apply` will generate. A test
+asserts that, and that the example configuration it prints plans cleanly.
 
 Three things to know before changing any of it:
 
