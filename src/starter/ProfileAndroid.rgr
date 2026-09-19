@@ -211,6 +211,7 @@ class ProfileAndroid extends StarterProfile {
         plan.addFile((PlanFile.generated("platforms/android/app/build.gradle.kts" (StarterTemplates.androidAppGradle(pkg devices className)) id)))
         plan.addFile((PlanFile.generated("platforms/android/app/src/main/AndroidManifest.xml" (StarterTemplates.androidManifest(name devices)) id)))
         plan.addFile((PlanFile.generated("platforms/android/gradle/wrapper/gradle-wrapper.properties" (StarterTemplates.androidWrapperProperties()) id)))
+        plan.addFile((PlanFile.generated("platforms/android/gradle.properties" (StarterTemplates.androidGradleProperties()) id)))
         plan.addFile((PlanFile.generated("scripts/android-gradle.js" (StarterTemplates.androidGradleJs()) id)))
 
         ; The shell and the module are seeds: the app is the author's.
@@ -284,6 +285,9 @@ class ProfileAndroid extends StarterProfile {
         push l "  Android Studio is enough: it never installs `gradle` on PATH. The wrapper"
         push l "  JAR is fetched on the first build. Opening `platforms/android` in Android"
         push l "  Studio also works, and is the smallest next step if the fetch cannot run."
+        push l "- **The host is AndroidX.** `platforms/android/gradle.properties` sets"
+        push l "  `android.useAndroidX=true`. Without it, assembleDebug fails at"
+        push l "  `checkDebugAarMetadata` after Ranger has already compiled."
         if (StarterText.includes(devices "tv")) {
             push l "- **TV:** the manifest carries `LEANBACK_LAUNCHER`. Without it the app does"
             push l "  not appear on a TV at all."
