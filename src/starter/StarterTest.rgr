@@ -1414,6 +1414,46 @@ class StarterTest {
         t.isTrue("the compiled kotlin is gitignored" (StarterText.includes(project.ignores "platforms/android/app/src/main/generated/")))
         t.isTrue("and so is gradle's own output" (StarterText.includes(project.ignores "platforms/android/app/build/")))
 
+        ; Android Studio never puts `gradle` on PATH. The wrapper is how the
+        ; generated project is assembled, so a machine that already builds
+        ; Android apps does not fail with `gradle: command not found`.
+        def build:string (StarterTest.commandOf(project "android:build"))
+        t.isTrue("assemble goes through the wrapper" (contains build "scripts/android-gradle.js"))
+        t.isTrue("and the task is assembleDebug" (contains build "assembleDebug"))
+        t.isFalse("it does not call gradle on PATH" (contains build "gradle assembleDebug"))
+        def install:string (StarterTest.commandOf(project "android:install"))
+        t.isTrue("install goes through the wrapper" (contains install "scripts/android-gradle.js"))
+        t.isFalse("and not gradle on PATH" (contains install "gradle installDebug"))
+
+        def wrapperProps@(optional):PlanFile (project.fileAt("platforms/android/gradle/wrapper/gradle-wrapper.properties"))
+        t.isTrue("the wrapper properties are planned" ((null? wrapperProps) == false))
+        if ((null? wrapperProps) == false) {
+            def wp:PlanFile (unwrap wrapperProps)
+            t.isFalse("they are generated" wp.isSeed)
+            t.isTrue("and pin Gradle 8.9, which AGP 8.7.3 wants" (contains wp.contents "gradle-8.9-bin.zip"))
+        }
+        def launcher@(optional):PlanFile (project.fileAt("scripts/android-gradle.js"))
+        t.isTrue("the launcher is planned" ((null? launcher) == false))
+        if ((null? launcher) == false) {
+            def ln:PlanFile (unwrap launcher)
+            t.isTrue("it fetches the wrapper jar" (contains ln.contents "gradle-wrapper.jar"))
+            t.isTrue("and runs GradleWrapperMain" (contains ln.contents "org.gradle.wrapper.GradleWrapperMain"))
+        }
+        t.isTrue("the fetched jar is gitignored" (StarterText.includes(project.ignores "platforms/android/gradle/wrapper/gradle-wrapper.jar")))
+
+        def sawGradle:boolean false
+        def sawJava:boolean false
+        for project.checks c:PlanCheck i {
+            if (c.program == "gradle") {
+                sawGradle = true
+            }
+            if (c.program == "java") {
+                sawJava = true
+            }
+        }
+        t.isFalse("doctor does not require gradle on PATH" sawGradle)
+        t.isTrue("it still wants a JDK" sawJava)
+
         ; `npm start` cannot run an APK, so it does the nearest useful thing
         ; rather than answering "missing script".
         t.eqStr("start installs on a device" (StarterTest.commandOf(project "start")) "npm run android:install")
