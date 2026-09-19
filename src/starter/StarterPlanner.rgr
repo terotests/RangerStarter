@@ -1,0 +1,641 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterPlanner -- `StarterConfig` -> `ProjectPlan`. Pure.
+;
+; It validates, runs the enabled profiles' contributions in phases, and adds the
+; files that belong to no surface: `package.json`, `ranger.json`, `.gitignore`,
+; the CI workflow, and the managed Markdown.
+;
+; THE PHASE ORDER IS THE CONTRACT. All profiles' `validate`, then all their
+; `contributeFiles`, then all their `contributeScripts`, and so on. Within a
+; phase, profiles run in canonical surface order and a later contribution of the
+; same path or name replaces an earlier one. So "who wins" is answerable by
+; reading the configuration, not by reading the registry's history.
+;
+; The managed Markdown is rendered LAST, from the sections every profile
+; contributed, so the create-from-nothing path and the merge-into-existing path
+; build their regions through the same function and cannot disagree.
+
+Import "StarterProfiles.rgr"
+Import "StarterTemplates.rgr"
+Import "StarterMarkdown.rgr"
+Import "StarterAssets.rgr"
+
+class StarterPlanner {
+
+    Constructor () {
+    }
+
+    ; `assets` is what the tool ships -- the skill texts. It is an INPUT rather
+    ; than something the planner reads from disk, for the same reason `DiskState`
+    ; is: the planner has to stay a function.
+    sfn plan:ProjectPlan (cfg:StarterConfig targets:StarterTargets assets:StarterAssets) {
+        def out (new ProjectPlan())
+        def profiles:StarterProfiles (StarterProfiles.registry())
+
+        StarterPlanner.validateConfig(cfg out profiles)
+        def enabled:[StarterProfile] (profiles.enabledFor(cfg))
+        for enabled p:StarterProfile i {
+            p.validate(cfg out targets)
+        }
+        ; A plan produced from a configuration with errors would be a plan for a
+        ; project nobody asked for, so the problems are the answer.
+        if (out.hasErrors()) {
+            return out
+        }
+
+        for enabled p:StarterProfile i {
+            p.contributeFiles(cfg out targets)
+        }
+        for enabled p:StarterProfile i {
+            p.contributeScripts(cfg out targets)
+        }
+        for enabled p:StarterProfile i {
+            p.contributeDependencies(cfg out targets)
+        }
+        for enabled p:StarterProfile i {
+            p.contributeSections(cfg out targets)
+        }
+        for enabled p:StarterProfile i {
+            p.contributeChecks(cfg out targets)
+        }
+        for enabled p:StarterProfile i {
+            p.contributeSkills(cfg out targets)
+        }
+
+        StarterPlanner.addCoreScripts(cfg out)
+        StarterPlanner.ensureStartAndTest(cfg out profiles)
+        StarterPlanner.addCoreChecks(cfg out targets)
+        StarterPlanner.addDocs(cfg out)
+        StarterPlanner.addSkills(cfg out assets)
+        StarterPlanner.addCoreSections(cfg out targets profiles assets)
+        StarterPlanner.addCoreFiles(cfg out targets)
+        StarterPlanner.addMarkdown(cfg out)
+        StarterPlanner.addInstall(out)
+        return out
+    }
+
+    ; --- validation -----------------------------------------------------------
+
+    sfn validateConfig:void (cfg:StarterConfig plan:ProjectPlan profiles:StarterProfiles) {
+        def name:string (cfg.projectName())
+        if ((strlen name) == 0) {
+            plan.addProblem((StarterProblem.about("name" "the project needs a name. It becomes the npm package name, the Ranger class name and the default bundle id.")))
+        } {
+            if ((StarterPlanner.isUsableName(name)) == false) {
+                plan.addProblem((StarterProblem.about("name" ("`" + name + "` cannot be an npm package name. Use lowercase letters, digits, `-` and `_`, starting with a letter."))))
+            }
+        }
+
+        def kind:string (cfg.projectKind())
+        if (kind != "application") {
+            if (kind != "library") {
+                plan.addProblem((StarterProblem.about("kind" ("`" + kind + "` is not a project kind. It is `application` or `library`."))))
+            }
+        }
+
+        def schema:int (cfg.schemaVersion())
+        if (schema == 0) {
+            plan.addProblem((StarterProblem.warn("schema" "no schema version. Assuming 1; write `\"schema\": 1` so a later version of this tool knows what it is reading.")))
+        }
+        if (schema > 1) {
+            plan.addProblem((StarterProblem.about("schema" ("this file says schema " + (to_string schema) + " and this tool understands 1. Upgrade ranger-starter."))))
+        }
+
+        def surfaces:[string] (cfg.enabledSurfaceIds())
+        if ((array_length surfaces) == 0) {
+            plan.addProblem((StarterProblem.about("surfaces" "nothing is enabled, so there is nothing to generate. Enable at least one surface.")))
+        }
+
+        ; A surface the file switches on that this build has never heard of. A
+        ; typo, or a surface this version dropped -- `server` was offered as a
+        ; slot for a while and is not any more. Unknown keys are KEPT, so
+        ; without this the file would ask for something and get silence.
+        def unknown:[string] (cfg.unknownEnabledSurfaces())
+        for unknown sid:string i {
+            def names:string (StarterText.joinWith((StarterConfig.surfaceIds()) ", "))
+            plan.addProblem((StarterProblem.about(("surfaces." + sid) ("`" + sid + "` is not a surface this version of ranger-starter has. It generates " + names + ". Your answer is kept in the file; switch it off, or correct the name, to generate the rest."))))
+        }
+
+        ; An enabled surface with no profile is an honest error. The alternative --
+        ; generating everything except that surface and saying nothing -- produces
+        ; a project that is quietly not what was asked for.
+        def missing:[string] (profiles.missingFor(cfg))
+        for missing sid:string i {
+            def why:string ("the " + (StarterConfig.surfaceTitle(sid)) + " surface is not implemented yet. The configuration keeps your answer; disable it to generate the rest.")
+            plan.addProblem((StarterProblem.about(("surfaces." + sid) why)))
+        }
+    }
+
+    ; npm's rules, minus the ones nothing here can produce: lowercase, starts with
+    ; a letter, and only characters a Ranger identifier survives being derived
+    ; from.
+    sfn isUsableName:boolean (name:string) {
+        def cnt:int (strlen name)
+        if (cnt == 0) {
+            return false
+        }
+        def first:int (charAt name 0)
+        if (first < 97) {
+            return false
+        }
+        if (first > 122) {
+            return false
+        }
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt name i)
+            def okChar:boolean false
+            if (c >= 97) {
+                if (c <= 122) {
+                    okChar = true
+                }
+            }
+            if (c >= 48) {
+                if (c <= 57) {
+                    okChar = true
+                }
+            }
+            if (c == 45) {
+                okChar = true
+            }
+            if (c == 95) {
+                okChar = true
+            }
+            if (okChar == false) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    ; --- the entry point every surface agrees on ------------------------------
+
+    ; The entry point `ranger.json` names, and the one a core script falls back
+    ; to. A project without a command line surface has no `src/Main.rgr`, so
+    ; naming one would put a path in `ranger.json` that is not there.
+    ; The one entry `npm test` type-checks and the API doc build reads. Asked of
+    ; the enabled profiles in registration order rather than decided here, so a
+    ; new surface does not need a line in this function -- which is how a
+    ; mobile-only project came to check `src/Main.rgr`, a file it never generates.
+    sfn entryOf:string (cfg:StarterConfig) {
+        if (cfg.isLibrary()) {
+            return ("src/" + (StarterText.pascalCase((cfg.projectName()))) + ".rgr")
+        }
+        def profiles:StarterProfiles (StarterProfiles.registry())
+        for (profiles.enabledFor(cfg)) profile:StarterProfile i {
+            def entry:string (profile.entryOf(cfg))
+            if ((strlen entry) > 0) {
+                return entry
+            }
+        }
+        return (cfg.optionOf("cli" "entry" "src/Main.rgr"))
+    }
+
+    ; --- core scripts ---------------------------------------------------------
+
+    sfn addCoreScripts:void (cfg:StarterConfig plan:ProjectPlan) {
+        ; `npm start` means the wizard until the project exists and the project
+        ; afterwards. In a GENERATED project the configuration exists by
+        ; definition, so `start` is the project -- the CLI profile set it. What the
+        ; core adds is the way back to the questions.
+        plan.addScript((PlanScript.entry("setup" "npx ranger-starter configure" "core")))
+        plan.addScript((PlanScript.entry("plan" "npx ranger-starter plan" "core")))
+        plan.addScript((PlanScript.entry("doctor" "npx ranger-starter doctor" "core")))
+    }
+
+    ; `npm start` and `npm test` are the two commands everybody types without
+    ; reading anything, and a generated project where they answer "missing
+    ; script" looks broken. The command line profile sets both; a project without
+    ; that surface gets the closest thing its surfaces can offer.
+    sfn ensureStartAndTest:void (cfg:StarterConfig plan:ProjectPlan profiles:StarterProfiles) {
+        def hasStart:boolean false
+        def hasTest:boolean false
+        for plan.scripts sc:PlanScript i {
+            if (sc.name == "start") {
+                hasStart = true
+            }
+            if (sc.name == "test") {
+                hasTest = true
+            }
+        }
+        ; No surface claimed `start`, so the enabled profiles are asked in
+        ; registration order and the first with an answer wins. None of them can
+        ; do what a command line surface does; each does the nearest useful
+        ; thing, which beats "missing script".
+        if (hasStart == false) {
+            def profiles2:StarterProfiles (StarterProfiles.registry())
+            for (profiles2.enabledFor(cfg)) profile:StarterProfile i {
+                if (hasStart == false) {
+                    def cmd:string (profile.startCommand(cfg))
+                    if ((strlen cmd) > 0) {
+                        plan.addScript((PlanScript.entry("start" cmd "core")))
+                        hasStart = true
+                    }
+                }
+            }
+        }
+        if (hasTest == false) {
+            ; Not a test, and it does not pretend to be: it is the compiler
+            ; saying the project still type-checks. A surface that brings a real
+            ; test replaces it.
+            def entry:string (StarterPlanner.entryOf(cfg))
+            plan.addScript((PlanScript.entry("test" ("node scripts/rgr.js check " + entry) "core")))
+        }
+    }
+
+    sfn addCoreChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        ; node is the one hard requirement, and the only tool here whose version
+        ; string this program claims to understand: `v22.1.0`, so the first number
+        ; is the major.
+        plan.addCheck((PlanCheck.atLeast("Ranger" "node" "node" 18 "Ranger's compiler is an npm package, so node is the one hard requirement. Install Node 18 or later.")))
+        ; Not a program check. `npx --version` answers npm's version, and
+        ; `npx --no-install rgrc` answers an npm ERROR when the package is absent
+        ; -- both of which a version reader would report as a version. The
+        ; compiler is a directory in node_modules, so the doctor looks for it and
+        ; reads the version out of its own manifest.
+        plan.addCheck((PlanCheck.file("Ranger" "ranger-compiler" "node_modules/ranger-compiler/package.json" "version" "`npm install` puts the compiler in node_modules. Nothing is installed globally.")))
+    }
+
+    sfn addDocs:void (cfg:StarterConfig plan:ProjectPlan) {
+        if ((cfg.docsEnabled()) == false) {
+            return
+        }
+        def entry:string (StarterPlanner.entryOf(cfg))
+        if (cfg.docsApi()) {
+            ; `-apidoc=<dir>` is resolved relative to the compiler's OUTPUT
+            ; directory, not the project root. So the output directory is the one
+            ; that names `docs`, and `-apidoc` names the subdirectory inside it:
+            ; `-d=build/docs -apidoc=api` writes `build/docs/api/api.json`.
+            ; Written the other way round -- `-apidoc=docs/api` with the default
+            ; `-d=build` -- the artifacts land in `build/docs/api` while every
+            ; document that mentions them says `docs/api`.
+            plan.addScript((PlanScript.entry("docs" ("node scripts/rgr.js build " + entry + " -d=build/docs -- -apidoc=api -apiformat=json,markdown") "core")))
+            def strictFlag:string " -d=build/docs -- -apidoc=api -apiformat=report"
+            if (cfg.docsStrict()) {
+                strictFlag = " -d=build/docs -- -apidoc=api -apiformat=report -apistrict"
+            }
+            plan.addScript((PlanScript.entry("docs:check" ("node scripts/rgr.js build " + entry + strictFlag) "core")))
+        }
+        plan.addSkill("ranger-docs")
+
+        def l:[string]
+        push l "## Documentation"
+        push l ""
+        push l "Public APIs are documented in the source, as a `doc { ... }` block attached to"
+        push l "the declaration it documents -- on the SAME LINE as the closing brace, because a"
+        push l "`doc` block on its own line binds to nothing:"
+        push l ""
+        push l "```ranger"
+        push l "fn find:Thing (id:string) {"
+        push l "    ..."
+        push l "} doc {"
+        push l "    public"
+        push l "    description \"Finds a thing by its identifier.\""
+        push l "    param id \"The identifier. Do not restate the type; the compiler knows it.\""
+        push l "    returns \"The thing.\""
+        push l "}"
+        push l "```"
+        push l ""
+        push l "After changing a public declaration:"
+        push l ""
+        push l "```bash"
+        push l "npm run docs"
+        push l "npm run docs:check"
+        push l "```"
+        push l ""
+        push l "The artifacts land in `build/docs/api` -- `-apidoc` is relative to the"
+        push l "compiler's output directory, not the project root -- so they are generated and"
+        push l "gitignored. Do not edit them by hand."
+        if (cfg.docsStrict()) {
+            push l ""
+            push l "`docs:check` runs with `-apistrict`, so an undocumented public declaration is"
+            push l "a build failure rather than a warning."
+        }
+        plan.addSection((PlanSection.about("AGENTS.md" "docs" 700 (StarterText.joinWith(l "\n")) "core")))
+    }
+
+    ; --- skills ---------------------------------------------------------------
+    ;
+    ; A profile asks for a skill by name. It is installed only if the tool ships
+    ; it, which is what `skills: "auto"` means -- and the ones that are NOT
+    ; shipped are dropped from the plan's list too, so CLAUDE.md never advertises
+    ; a skill that is not on disk.
+    sfn addSkills:void (cfg:StarterConfig plan:ProjectPlan assets:StarterAssets) {
+        if ((cfg.skillsMode()) == "none") {
+            plan.skills = (StarterPlanner.emptyNames())
+            return
+        }
+        def kept:[string]
+        for (StarterText.sorted(plan.skills)) name:string i {
+            if ((assets.hasSkill(name)) == false) {
+                continue
+            }
+            push kept name
+            def path:string (".claude/skills/" + name + "/SKILL.md")
+            plan.addFile((PlanFile.generated(path (assets.skillText(name)) "core")))
+        }
+        plan.skills = kept
+        if ((array_length kept) == 0) {
+            if ((strlen assets.problem) > 0) {
+                plan.addProblem((StarterProblem.warn("agents.skills" assets.problem)))
+            }
+        }
+    }
+
+    sfn emptyNames:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; --- core sections --------------------------------------------------------
+
+    sfn addCoreSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets profiles:StarterProfiles assets:StarterAssets) {
+        def name:string (cfg.projectName())
+        def kind:string (cfg.projectKind())
+        def surfaces:[string] (cfg.enabledSurfaceIds())
+        def titles:[string]
+        for surfaces sid:string i {
+            push titles (StarterConfig.surfaceTitle(sid))
+        }
+        def surfaceText:string (StarterText.joinWith(titles ", "))
+
+        ; --- README ---
+        def r:[string]
+        push r ("# " + name)
+        push r ""
+        push r ("A Ranger " + kind + " for " + surfaceText + ".")
+        push r ""
+        push r "## Start"
+        push r ""
+        push r "```bash"
+        push r "npm install"
+        push r "npm start"
+        push r "```"
+        plan.addSection((PlanSection.about("README.md" "readme-header" 100 (StarterText.joinWith(r "\n")) "core")))
+
+        def c:[string]
+        push c "## Commands"
+        push c ""
+        push c "```bash"
+        def scripts:[PlanScript] (plan.scriptsByName())
+        for scripts s:PlanScript i {
+            push c ("npm run " + s.name)
+        }
+        push c "```"
+        push c ""
+        push c "`npm start` and `npm test` are run without `run`."
+        plan.addSection((PlanSection.about("README.md" "readme-commands" 200 (StarterText.joinWith(c "\n")) "core")))
+
+        def s:[string]
+        push s "## Change what this project builds"
+        push s ""
+        push s "```bash"
+        push s "npm run setup"
+        push s "```"
+        push s ""
+        push s "See AGENTS.md for the development rules."
+        plan.addSection((PlanSection.about("README.md" "readme-setup" 900 (StarterText.joinWith(s "\n")) "core")))
+
+        ; --- AGENTS.md ---
+        if (cfg.wantsAgentsMd()) {
+            StarterPlanner.addAgentsSections(cfg plan targets)
+        }
+        if (cfg.wantsClaudeMd()) {
+            StarterPlanner.addClaudeSections(cfg plan assets)
+        }
+    }
+
+    sfn addAgentsSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def name:string (cfg.projectName())
+        def entry:string (StarterPlanner.entryOf(cfg))
+
+        def h:[string]
+        push h "# Working in this project"
+        push h ""
+        push h ("`" + name + "`, a Ranger " + (cfg.projectKind()) + ". One typed source language, and a")
+        push h "compiler that is an npm dependency rather than a checkout."
+        push h ""
+        push h "Everything between `<!-- ranger:start ... -->` markers in this file is generated"
+        push h "from `ranger.project.json`. Text outside the markers is yours and is never"
+        push h "touched."
+        plan.addSection((PlanSection.about("AGENTS.md" "agents-header" 100 (StarterText.joinWith(h "\n")) "core")))
+
+        def f:[string]
+        push f "## Where things are"
+        push f ""
+        push f "```"
+        push f ("ranger.project.json   what this project builds -- THE SOURCE OF TRUTH")
+        push f ("ranger.json           the compiler's package file: entry point, dependencies")
+        push f ("" + (StarterText.padRight(entry 21) + "the entry point"))
+        push f ("scripts/rgr.js        compile and run, and FAIL when the compile fails")
+        push f ("build/                everything the compiler writes -- gitignored")
+        push f (".ranger/generated.json what this tool wrote, and its fingerprints")
+        push f "```"
+        push f ""
+        push f "A file listed in `.ranger/generated.json` is generated. Do not edit one: change"
+        push f "`ranger.project.json` and re-apply. If you edit one anyway, the tool notices"
+        push f "and stops overwriting it -- which means it also stops updating it."
+        plan.addSection((PlanSection.about("AGENTS.md" "agents-files" 150 (StarterText.joinWith(f "\n")) "core")))
+
+        def traps:[string]
+        push traps "## Ranger rules that fail somewhere other than the mistake"
+        push traps ""
+        push traps "- **A returned call may need its own parentheses.** `return (fn1(3))`. A dotted"
+        push traps "  receiver is folded for you -- `return this.helper()` parses -- a bare local"
+        push traps "  lambda is not."
+        push traps "- **One statement per line.** `{ x = 1  return true }` is a parse error however"
+        push traps "  tidy it looks."
+        push traps "- **Reserved method names.** Defining `contains`, `startsWith`, `endsWith`,"
+        push traps "  `trim`, `first`, `last`, `remove`, `insert`, `write`, `read`, `normalize`,"
+        push traps "  `toString`, `has`, `sqrt`, `make` or `wrap` on your own class compiles, and then every"
+        push traps "  CALL SITE fails with \"Class X does not have method ...\". Rename."
+        push traps "- **Never start a statement with a parenthesised receiver.** Bind first:"
+        push traps "  `def recv:T (expr)` then `recv.method()`."
+        push traps "- **Optional annotations go on the name**, not the type:"
+        push traps "  `fn find@(optional):Thing (path:string)`. An absent value is returned by"
+        push traps "  declaring an uninitialised optional local and returning that."
+        push traps "- Integer division is `idiv`; `/` is real division. Elvis is prefix:"
+        push traps "  `(?? value fallback)`. There is no `abs` builtin."
+        plan.addSection((PlanSection.about("AGENTS.md" "agents-traps" 200 (StarterText.joinWith(traps "\n")) "core")))
+
+        def chosen:[string] (targets.inTableOrder((cfg.allTargetIds())))
+        if ((array_length chosen) > 1) {
+            def p:[string]
+            push p "## Targets disagree -- check, do not assume"
+            push p ""
+            push p ("This project builds " + (StarterText.joinWith(chosen ", ")) + " from one source.")
+            push p ""
+            push p "- `to_double` accepts `\"10 \"` on JavaScript and Python and refuses it on Go,"
+            push p "  so `(to_double (trim text))` is the portable form."
+            push p "- Numbers print as `7` on JavaScript and Go and `7.0` on Python. Test the"
+            push p "  VALUE, not the printed string."
+            push p ""
+            push p "Running the same test on more than one target is the only thing that actually"
+            push p "checks a portability claim."
+            plan.addSection((PlanSection.about("AGENTS.md" "agents-portability" 250 (StarterText.joinWith(p "\n")) "core")))
+        }
+
+        def setup:[string]
+        push setup "## Changing the project setup"
+        push setup ""
+        push setup "`ranger.project.json` is the source of truth. To change what this project"
+        push setup "builds, edit it and run:"
+        push setup ""
+        push setup "```bash"
+        push setup "npm run plan            # what would change; writes nothing"
+        push setup "npm run setup -- --apply"
+        push setup "```"
+        push setup ""
+        push setup "`npm run setup` with no arguments asks the questions interactively -- it"
+        push setup "needs a terminal and refuses a pipe. An agent should edit the JSON instead:"
+        push setup "there is no questionnaire to answer, and `npm run plan` prints exactly what"
+        push setup "`--apply` will do."
+        push setup ""
+        push setup "Every command takes `--json`, including the failures. One call gives the"
+        push setup "commands, the surfaces this build can generate, the targets the installed"
+        push setup "compiler has, and a configuration that works:"
+        push setup ""
+        push setup "```bash"
+        push setup "npx ranger-starter describe --json"
+        push setup "npx ranger-starter plan --json      # the actions apply will perform"
+        push setup "npx ranger-starter doctor --json    # what this machine is missing"
+        push setup "```"
+        push setup ""
+        push setup "Exit status: 0 worked, 1 a problem with the project, 2 a problem with the"
+        push setup "command line."
+        push setup ""
+        push setup "Generation is idempotent. Running it twice changes nothing the second time."
+        plan.addSection((PlanSection.about("AGENTS.md" "agents-setup" 800 (StarterText.joinWith(setup "\n")) "core")))
+
+        def lic:[string]
+        push lic "## The license line"
+        push lic ""
+        push lic ("This project is " + (cfg.licenseId()) + ". The Ranger compiler, its runtime, and `lib/`")
+        push lic "-- including EVG and the image codecs -- are MIT. Anything under `gallery/` in"
+        push lic "the Ranger repository is **AGPL-3.0-or-later**."
+        push lic ""
+        push lic "Distributing a program built on gallery code -- including over a network -- puts"
+        push lic "that program under the AGPL unless you hold a separate commercial license."
+        push lic "Compiling your own program with Ranger imposes nothing."
+        push lic ""
+        push lic "**Do not add a gallery dependency without saying what it means first.**"
+        plan.addSection((PlanSection.about("AGENTS.md" "agents-license" 900 (StarterText.joinWith(lic "\n")) "core")))
+    }
+
+    sfn addClaudeSections:void (cfg:StarterConfig plan:ProjectPlan assets:StarterAssets) {
+        def l:[string]
+        push l "# Claude Code in this project"
+        push l ""
+        push l "Read [AGENTS.md](AGENTS.md) first. It has the architecture, the exact commands,"
+        push l "the Ranger syntax traps and the generated-file policy; this file only has what"
+        push l "is specific to working here with skills."
+        push l ""
+        def skills:[string] (StarterText.sorted(plan.skills))
+        if ((array_length skills) > 0) {
+            push l "Skills that load with this project, from `.claude/skills/`:"
+            push l ""
+            for skills s:string i {
+                def about:string (assets.skillAbout(s))
+                if ((strlen about) > 0) {
+                    push l ("- **" + s + "** — " + about)
+                } {
+                    push l ("- **" + s + "**")
+                }
+            }
+            push l ""
+        }
+        push l "`ranger.project.json` is the source of truth for what this project builds. Do"
+        push l "not hand-edit a file listed in `.ranger/generated.json`; change the"
+        push l "configuration and run `npm run plan`, then `npm run setup -- --apply`."
+        plan.addSection((PlanSection.about("CLAUDE.md" "claude-header" 100 (StarterText.joinWith(l "\n")) "core")))
+    }
+
+    ; --- core files -----------------------------------------------------------
+
+    sfn addCoreFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addFile((PlanFile.generated(".gitignore" (StarterTemplates.gitignore(plan.ignores)) "core")))
+        plan.addFile((PlanFile.structured("package.json" (StarterPlanner.packageJson(cfg plan)) "core")))
+        plan.addFile((PlanFile.structured("ranger.json" (StarterPlanner.rangerJson(cfg)) "core")))
+        if (cfg.wantsGithubCi()) {
+            def docsCheck:boolean false
+            if (cfg.docsEnabled()) {
+                if (cfg.docsApi()) {
+                    docsCheck = true
+                }
+            }
+            def multi:boolean (((array_length (cfg.allTargetIds())) > 1))
+            plan.addFile((PlanFile.generated(".github/workflows/ci.yml" (StarterTemplates.githubWorkflow((plan.scriptsByName()) docsCheck multi)) "core")))
+        }
+    }
+
+    sfn packageJson:string (cfg:StarterConfig plan:ProjectPlan) {
+        def root:JsonValue (JsonValue.newObject())
+        root.putKey("name" (JsonValue.fromText((cfg.projectName()))))
+        root.putKey("version" (JsonValue.fromText("0.1.0")))
+        root.putKey("license" (JsonValue.fromText((cfg.licenseId()))))
+        if ((cfg.isLibrary()) == false) {
+            ; An application is not something anybody publishes to npm by
+            ; accident. A library is, so it does not get this.
+            root.putKey("private" (JsonValue.fromBool(true)))
+        }
+
+        def scripts:JsonValue (JsonValue.newObject())
+        def entries:[PlanScript] (plan.scriptsByName())
+        for entries s:PlanScript i {
+            scripts.putKey(s.name (JsonValue.fromText(s.command)))
+        }
+        root.putKey("scripts" scripts)
+
+        def dev:JsonValue (JsonValue.newObject())
+        dev.putKey("ranger-compiler" (JsonValue.fromText("^3.5.1")))
+        def deps:JsonValue (JsonValue.newObject())
+        def planned:[PlanDependency] (plan.dependenciesByName())
+        for planned d:PlanDependency i {
+            if d.isDev {
+                dev.putKey(d.name (JsonValue.fromText(d.version)))
+            } {
+                deps.putKey(d.name (JsonValue.fromText(d.version)))
+            }
+        }
+        if ((array_length deps.order) > 0) {
+            root.putKey("dependencies" deps)
+        }
+        root.putKey("devDependencies" dev)
+        return (root.asText())
+    }
+
+    sfn rangerJson:string (cfg:StarterConfig) {
+        def root:JsonValue (JsonValue.newObject())
+        root.putKey("name" (JsonValue.fromText((cfg.projectName()))))
+        root.putKey("version" (JsonValue.fromText("0.1.0")))
+        root.putKey("entry" (JsonValue.fromText((StarterPlanner.entryOf(cfg)))))
+        root.putKey("license" (JsonValue.fromText((cfg.licenseId()))))
+        root.putKey("dependencies" (JsonValue.newObject()))
+        return (root.asText())
+    }
+
+    ; The managed Markdown, rendered from whatever the profiles and the core
+    ; contributed. This runs last, and it is why the create path and the merge
+    ; path agree.
+    sfn addMarkdown:void (cfg:StarterConfig plan:ProjectPlan) {
+        def mdFiles:[string] (plan.markdownFiles())
+        for mdFiles file:string i {
+            def sections:[PlanSection] (plan.sectionsOf(file))
+            plan.addFile((PlanFile.managed(file (StarterMarkdown.render(sections)) "core")))
+        }
+    }
+
+    sfn addInstall:void (plan:ProjectPlan) {
+        def deps:[PlanDependency] (plan.dependenciesByName())
+        if ((array_length deps) == 0) {
+            return
+        }
+        def c (new PlanCommand())
+        c.program = "npm"
+        push c.args "install"
+        c.why = "to fetch what the enabled surfaces need"
+        plan.addCommand(c)
+    }
+}

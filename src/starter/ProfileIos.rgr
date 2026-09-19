@@ -1,0 +1,282 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileIos -- a Swift module inside a SwiftUI host shell, built without Xcode.
+;
+;     src/Ios.rgr  ->  Swift  ->  swiftc  ->  a .app bundle
+;
+; NO `.xcodeproj` AND NO `xcodebuild`. An iOS app is a directory with an
+; executable in it and a property list explaining that executable to the system.
+; Xcode assembles both from a project file, a target, a scheme and a settings
+; sheet; none of that is required, and `lib/apple` -- which SHIPS INSIDE
+; `ranger-compiler`, so there is nothing to install and nothing to declare --
+; drives `xcrun`, `swiftc`, `plutil`, `codesign` and `simctl` directly.
+;
+; THE BUILD IS A RANGER PROGRAM, `scripts/ios-build.rgr`, and that is what makes
+; it testable. `lib/Shell.rgr` has a dry run: every command line is recorded and
+; nothing is executed, so the DECISIONS -- which SDK, which triple, which device
+; families, in which order -- can be checked on a machine that is not a Mac.
+;
+; GENERATION WORKS EVERYWHERE. A Linux or Windows machine generates the whole iOS
+; surface and `doctor` reports that it cannot BUILD it -- "unavailable", not
+; "missing". Refusing to generate off a Mac would make the configuration
+; machine-dependent, which is the one thing it must never be.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileIos extends StarterProfile {
+
+    Constructor () {
+        id = "ios"
+    }
+
+    fn defaultTarget:string () {
+        return "swift6"
+    }
+
+    fn targetsAllowed:[string] () {
+        def out:[string]
+        push out "swift6"
+        push out "swift3"
+        return out
+    }
+
+    sfn deviceIds:[string] () {
+        def out:[string]
+        push out "iphone"
+        push out "ipad"
+        return out
+    }
+
+    sfn deviceTitle:string (device:string) {
+        switch device {
+            case "iphone" {
+                return "iPhone"
+            }
+            case "ipad" {
+                return "iPad"
+            }
+        }
+        return device
+    }
+
+    fn bundleIdOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "bundleId" (StarterConfig.reverseDomain((cfg.projectName())))))
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "entry" "src/Shared.rgr"))
+    }
+
+    ; Nothing here launches a simulator, so building the bundle is the most this
+    ; can honestly mean.
+    fn startCommand:string (cfg:StarterConfig) {
+        return "npm run ios:build"
+    }
+
+    fn moduleNameOf:string (cfg:StarterConfig) {
+        return (StarterText.stemName((this.entryOf(cfg))))
+    }
+
+    fn devicesKnown:[string] () {
+        return (ProfileIos.deviceIds())
+    }
+
+    fn devicesDefault:[string] () {
+        def out:[string]
+        push out "iphone"
+        return out
+    }
+
+    fn deviceLabel:string (device:string) {
+        return (ProfileIos.deviceTitle(device))
+    }
+
+    ; One number list in Info.plist, and the only difference between "an iPhone
+    ; app" and "an iPad app" once the binary exists.
+    fn deviceHint:string (device:string) {
+        switch device {
+            case "iphone" {
+                return "UIDeviceFamily 1"
+            }
+            case "ipad" {
+                return "UIDeviceFamily 2; both makes it universal"
+            }
+        }
+        return ""
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+
+        def bundleId:string (this.bundleIdOf(cfg))
+        if ((ProfileIos.isUsableBundleId(bundleId)) == false) {
+            plan.addProblem((StarterProblem.about("surfaces.ios.bundleId" ("`" + bundleId + "` is not a bundle identifier. It is dot-separated segments of letters, digits and `-`, each starting with a letter -- `com.example.northwind`."))))
+        }
+
+        def devices:[string] (cfg.devicesOf(id))
+        if ((array_length devices) == 0) {
+            plan.addProblem((StarterProblem.about("surfaces.ios.devices" "no device family chosen. Pick iphone, ipad or both.")))
+        }
+        def known:[string] (ProfileIos.deviceIds())
+        for devices d:string i {
+            if ((StarterText.includes(known d)) == false) {
+                plan.addProblem((StarterProblem.about("surfaces.ios.devices" ("`" + d + "` is not an iOS device family. They are " + (StarterText.joinWith(known ", ")) + "."))))
+            }
+        }
+    }
+
+    ; Apple's rule: alphanumerics, hyphen and period, and a hyphen is legal where
+    ; an underscore is not -- which is the opposite of Android's, so the two
+    ; cannot share a checker.
+    sfn isUsableBundleId:boolean (bundleId:string) {
+        if ((strlen bundleId) == 0) {
+            return false
+        }
+        def parts:[string] (strsplit bundleId ".")
+        if ((array_length parts) < 2) {
+            return false
+        }
+        for parts part:string i {
+            if ((strlen part) == 0) {
+                return false
+            }
+            def first:int (charAt part 0)
+            def firstOk:boolean false
+            if (first >= 97) {
+                if (first <= 122) {
+                    firstOk = true
+                }
+            }
+            if (first >= 65) {
+                if (first <= 90) {
+                    firstOk = true
+                }
+            }
+            if (firstOk == false) {
+                return false
+            }
+            def cnt:int (strlen part)
+            def j:int 0
+            while (j < cnt) {
+                def c:int (charAt part j)
+                def okChar:boolean false
+                if (c >= 97) {
+                    if (c <= 122) {
+                        okChar = true
+                    }
+                }
+                if (c >= 65) {
+                    if (c <= 90) {
+                        okChar = true
+                    }
+                }
+                if (c >= 48) {
+                    if (c <= 57) {
+                        okChar = true
+                    }
+                }
+                if (c == 45) {
+                    okChar = true
+                }
+                if (okChar == false) {
+                    return false
+                }
+                j = j + 1
+            }
+        }
+        return true
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def className:string (StarterText.pascalCase(moduleName))
+        def name:string (cfg.projectName())
+        def bundleId:string (this.bundleIdOf(cfg))
+        def devices:[string] (cfg.devicesOf(id))
+
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+        plan.addFile((PlanFile.generated("scripts/ios-build.rgr" (StarterTemplates.iosBuildScript(name className bundleId devices)) id)))
+
+        plan.addFile((PlanFile.seed("platforms/ios/App.swift" (StarterTemplates.iosAppSwift(name className (StarterText.pascalCase(name)))) id)))
+        plan.addFile((PlanFile.seed(entry (StarterTemplates.mobileSeed(name className)) id)))
+
+        plan.addIgnore("build/ios/")
+        plan.addIgnore("build/ios-simulator/")
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def chosen:[string] (this.myTargets(cfg targets))
+        def flag:string "swift6"
+        if ((array_length chosen) > 0) {
+            flag = (itemAt chosen 0)
+        }
+        plan.addScript((PlanScript.entry("ios:compile" ("node scripts/rgr.js build " + entry + " -l=" + flag + " -d=build/ios") id)))
+        plan.addScript((PlanScript.entry("ios:build" "npm run ios:compile && node scripts/rgr.js run scripts/ios-build.rgr" id)))
+        ; The one command that works on any machine: it prints the build it WOULD
+        ; run and executes nothing.
+        ; NO `--` before the flag. In `scripts/rgr.js`, `--` means "pass the rest
+        ; to the COMPILER"; arguments for the program being run go straight after
+        ; the source. Written with `--`, the flag reached rgrc, the script saw no
+        ; arguments, and the dry run silently became a real build attempt.
+        plan.addScript((PlanScript.entry("ios:plan" "npm run ios:compile && node scripts/rgr.js run scripts/ios-build.rgr --dry-run" id)))
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def className:string (StarterText.pascalCase(moduleName))
+        def bundleId:string (this.bundleIdOf(cfg))
+        def devices:[string] (cfg.devicesOf(id))
+
+        def l:[string]
+        push l "## iOS"
+        push l ""
+        push l ("Ranger source: `" + entry + "`, compiled to Swift into `build/ios/" + className + ".swift`")
+        push l "and built together with the SwiftUI host in `platforms/ios/App.swift`."
+        push l ""
+        push l ("Bundle id: `" + bundleId + "`. Device families: " + (StarterText.joinWith(devices ", ")) + ".")
+        push l ""
+        push l "```bash"
+        push l "npm run ios:plan      # the build it would run -- works on ANY machine"
+        push l "npm run ios:compile   # Ranger -> Swift"
+        push l "npm run ios:build     # and build the .app (needs macOS)"
+        push l "```"
+        push l ""
+        push l "- **There is no `.xcodeproj` and no `xcodebuild`.** `scripts/ios-build.rgr`"
+        push l "  drives `xcrun`, `swiftc`, `plutil` and `codesign` through `lib/apple`, which"
+        push l "  ships inside `ranger-compiler` -- nothing to install, nothing to declare."
+        push l "- **`npm run ios:plan` works on Linux and Windows.** `lib/Shell.rgr` has a dry"
+        push l "  run: every command line is recorded and nothing is executed. That is how the"
+        push l "  build's decisions are checked without a Mac."
+        push l "- **Generating is not building.** The whole iOS surface generates on any"
+        push l "  machine; `npm run doctor` reports the build as unavailable off a Mac rather"
+        push l "  than as a missing tool."
+        push l "- **`platforms/ios/App.swift` is yours.** It was written once and nothing"
+        push l "  regenerates it; `scripts/ios-build.rgr` IS regenerated, so change"
+        push l "  `ranger.project.json` rather than the script."
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-ios" 350 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        ; `onlyOn` is the whole point here: off a Mac these are UNAVAILABLE, not
+        ; missing. Generating the surface anywhere is correct; building it is not
+        ; possible, and reporting that as a missing tool would invite somebody to
+        ; go looking for it.
+        def xcrun:PlanCheck (PlanCheck.tool("iOS" "Xcode command line tools" "xcrun" "Needed to build. `xcode-select --install`, or install Xcode from the App Store."))
+        xcrun.onlyOn = "darwin"
+        plan.addCheck(xcrun)
+
+        def simctl:PlanCheck (PlanCheck.tool("iOS" "simulator runtimes" "xcrun" "`xcrun simctl list devices` should show at least one iOS runtime."))
+        simctl.onlyOn = "darwin"
+        simctl.optional = true
+        plan.addCheck(simctl)
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-build")
+    }
+}

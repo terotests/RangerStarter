@@ -1,0 +1,772 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterWizard -- the questionnaire, as a pure state machine.
+;
+; IT DOES NOT TOUCH THE TERMINAL. `render` answers the lines to draw and `onKey`
+; takes a key name and changes state. The host clears the screen and prints; that
+; is all the host does.
+;
+; Three things follow from that, and the first two are why it is worth the
+; discipline:
+;
+;   * IT IS TESTABLE. A test feeds `down space down space return` and asserts the
+;     resulting configuration. No TTY, no subprocess, no timing.
+;   * IT IS SCREENSHOTTABLE. The same key sequence renders the same frames, so the
+;     pictures in the documentation are generated from the code rather than
+;     captured by hand and left to rot.
+;   * The wizard is a FRONTEND. It produces a `StarterConfig` and nothing else --
+;     the same value an agent writes by hand -- so there is one generator and no
+;     second path through it.
+;
+; WHAT THE KEY NAMES ARE. `poll_keypress` answers node's readline names: "up",
+; "down", "left", "right", "space", "return", "backspace", "escape", and a letter
+; for a letter. Uppercase arrives as the lowercase name (readline reports shift
+; separately), so a text answer here is effectively lowercase -- which is what an
+; npm package name has to be anyway. A digit arrives as itself.
+
+Import "StarterConfig.rgr"
+Import "StarterTargets.rgr"
+Import "StarterProfiles.rgr"
+Import "StarterText.rgr"
+
+class WizardOption {
+
+    def id:string ""
+    def label:string ""
+    def hint:string ""
+
+    ; An option that exists in the configuration but that this build cannot
+    ; generate. It is SHOWN, greyed, with the reason -- offering nothing at all
+    ; would hide the plan, and offering it as selectable would produce a
+    ; configuration that fails to apply.
+    def available:boolean true
+
+    def picked:boolean false
+
+    Constructor () {
+    }
+
+    sfn of:WizardOption (id:string label:string hint:string) {
+        def o (new WizardOption())
+        o.id = id
+        o.label = label
+        o.hint = hint
+        return o
+    }
+
+    sfn unavailable:WizardOption (id:string label:string why:string) {
+        def o:WizardOption (WizardOption.of(id label why))
+        o.available = false
+        return o
+    }
+}
+
+class WizardQuestion {
+
+    def id:string ""
+
+    ; "text" | "single" | "multi" | "review"
+    def kind:string "single"
+
+    def title:string ""
+    def help:string ""
+    def options:[WizardOption]
+
+    ; For "text".
+    def text:string ""
+    def placeholder:string ""
+
+    def cursor:int 0
+    def minPicked:int 1
+
+    ; Only asked when this surface is chosen. "" for always.
+    def dependsOnSurface:string ""
+
+    ; Set by `onKey` when an answer is refused, cleared on the next keypress.
+    def problem:string ""
+
+    Constructor () {
+    }
+
+    fn pickedIds:[string] () {
+        def out:[string]
+        for options o:WizardOption i {
+            if (o.picked) {
+                push out o.id
+            }
+        }
+        return out
+    }
+
+    fn firstPicked:string () {
+        for options o:WizardOption i {
+            if (o.picked) {
+                return o.id
+            }
+        }
+        return ""
+    }
+
+    fn pickOnly:void (id:string) {
+        for options o:WizardOption i {
+            o.picked = (o.id == id)
+        }
+    }
+
+    fn optionAt@(optional):WizardOption (index:int) {
+        if (index < 0) {
+            def miss@(optional):WizardOption
+            return miss
+        }
+        if (index >= (array_length options)) {
+            def miss2@(optional):WizardOption
+            return miss2
+        }
+        def hit@(optional):WizardOption (itemAt options index)
+        return hit
+    }
+
+    fn countPicked:int () {
+        def n:int 0
+        for options o:WizardOption i {
+            if (o.picked) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}
+
+class StarterWizard {
+
+    def questions:[WizardQuestion]
+    def index:int 0
+
+    ; True once the last screen has been confirmed. The host stops and applies.
+    def done:boolean false
+
+    ; True when ctrl-c or escape ended it. The host stops and writes nothing.
+    def cancelled:boolean false
+
+    def targets:StarterTargets (StarterTargets.bundled())
+    def profiles:StarterProfiles (StarterProfiles.registry())
+
+    ; The name of the project being configured, carried separately because the
+    ; Android package and the iOS bundle id are derived from it.
+    def projectName:string ""
+
+    Constructor () {
+    }
+
+    ; --- building the questions -----------------------------------------------
+
+    sfn forConfig:StarterWizard (cfg:StarterConfig targets:StarterTargets) {
+        def w (new StarterWizard())
+        w.targets = targets
+        w.projectName = (cfg.projectName())
+
+        push w.questions (StarterWizard.nameQuestion(cfg))
+        push w.questions (StarterWizard.kindQuestion(cfg))
+        push w.questions (StarterWizard.surfacesQuestion(cfg w.profiles))
+
+        ; One target question per surface that has a profile. It is skipped at run
+        ; time when its surface is not chosen, rather than being rebuilt on every
+        ; keystroke -- a question that comes and goes loses the answer somebody
+        ; already gave it.
+        ; A target question, and for a surface with a device notion a device
+        ; question straight after it, per profile that has one. Both are skipped
+        ; at run time when the surface is not chosen, rather than being rebuilt on
+        ; every keystroke -- a question that comes and goes loses the answer
+        ; somebody already gave it.
+        for w.profiles.list p:StarterProfile i {
+            push w.questions (StarterWizard.targetsQuestion(cfg targets p))
+            if ((array_length (p.devicesKnown())) > 0) {
+                push w.questions (StarterWizard.devicesQuestion(cfg p))
+            }
+        }
+
+        push w.questions (StarterWizard.docsQuestion(cfg))
+        push w.questions (StarterWizard.agentsQuestion(cfg))
+        push w.questions (StarterWizard.ciQuestion(cfg))
+        push w.questions (StarterWizard.reviewQuestion())
+        return w
+    }
+
+    sfn nameQuestion:WizardQuestion (cfg:StarterConfig) {
+        def q (new WizardQuestion())
+        q.id = "name"
+        q.kind = "text"
+        q.title = "What is the project called?"
+        q.help = "Lowercase letters, digits, `-` and `_`. It becomes the npm package name, the Ranger class name and the default bundle id."
+        q.placeholder = "my-app"
+        q.text = (cfg.projectName())
+        return q
+    }
+
+    sfn kindQuestion:WizardQuestion (cfg:StarterConfig) {
+        def q (new WizardQuestion())
+        q.id = "kind"
+        q.kind = "single"
+        q.title = "What are you building?"
+        q.help = "This is not the same question as where it runs. A library can have a command line surface, and an application can have several."
+        push q.options (WizardOption.of("application" "Application" "a program with an entry point"))
+        push q.options (WizardOption.of("library" "Library" "an exported surface, and a package per ecosystem"))
+        q.pickOnly((cfg.projectKind()))
+        q.cursor = 0
+        if ((cfg.projectKind()) == "library") {
+            q.cursor = 1
+        }
+        return q
+    }
+
+    sfn surfacesQuestion:WizardQuestion (cfg:StarterConfig profiles:StarterProfiles) {
+        def q (new WizardQuestion())
+        q.id = "surfaces"
+        q.kind = "multi"
+        q.title = "Where should it run?"
+        q.help = "Pick as many as apply. These are independent of each other and of the kind."
+        q.minPicked = 1
+        def ids:[string] (StarterConfig.surfaceIds())
+        for ids sid:string i {
+            def title:string (StarterConfig.surfaceTitle(sid))
+            def hit@(optional):StarterProfile (profiles.find(sid))
+            if (null? hit) {
+                push q.options (WizardOption.unavailable(sid title (StarterWizard.notBuiltYet(sid))))
+            } {
+                def o:WizardOption (WizardOption.of(sid title (StarterWizard.surfaceHint(sid))))
+                o.picked = (cfg.isEnabled(sid))
+                push q.options o
+            }
+        }
+        return q
+    }
+
+    ; Every surface this build offers has a profile, so nothing is greyed today.
+    ; The machinery stays: it is what lets a surface be added to the
+    ; configuration's vocabulary before its profile exists, without the wizard
+    ; offering something `apply` would refuse.
+    sfn notBuiltYet:string (sid:string) {
+        return "not built yet"
+    }
+
+    sfn surfaceHint:string (sid:string) {
+        switch sid {
+            case "cli" {
+                return "an entry point and a way to run it"
+            }
+            case "library" {
+                return "a manifest for each ecosystem that has one"
+            }
+            case "web" {
+                return "a page, and a Ranger ES module it imports, served by Vite"
+            }
+            case "android" {
+                return "a Kotlin module inside a Compose shell"
+            }
+            case "ios" {
+                return "a Swift module inside a SwiftUI shell, built without Xcode"
+            }
+            case "desktop" {
+                return "an SDL2 window over a module compiled to C++"
+            }
+        }
+        return ""
+    }
+
+    sfn targetsQuestion:WizardQuestion (cfg:StarterConfig targets:StarterTargets profile:StarterProfile) {
+        def q (new WizardQuestion())
+        q.id = ("targets:" + profile.id)
+        q.kind = "multi"
+        q.dependsOnSurface = profile.id
+        q.title = ((profile.title()) + ": which languages?")
+        q.help = "One source, compiled to each of these. They are the compiler's own targets; a starred one is a variant compiled with an extra flag."
+        q.minPicked = 1
+        def already:[string] (cfg.targetsOf(profile.id))
+        def allowed:[string] (profile.targetsAllowed())
+        for targets.list t:StarterTarget i {
+            if ((array_length allowed) > 0) {
+                if ((StarterText.includes(allowed t.id)) == false) {
+                    continue
+                }
+            }
+            def label:string t.name
+            if (t.isVariant()) {
+                label = (t.name + " *")
+            }
+            def o:WizardOption (WizardOption.of(t.id label (StarterWizard.targetHint(t))))
+            o.picked = (StarterText.includes(already t.id))
+            push q.options o
+        }
+        return q
+    }
+
+    ; Which devices one app is for. NOT separate builds: on Android these change
+    ; the minimum SDK, the manifest and the dependencies of a single APK, and on
+    ; iOS they are one number list in Info.plist. Built from the profile's own
+    ; vocabulary, so a surface that gains a device type gains a checkbox without
+    ; anything here changing.
+    sfn devicesQuestion:WizardQuestion (cfg:StarterConfig profile:StarterProfile) {
+        def q (new WizardQuestion())
+        q.id = ("devices:" + profile.id)
+        q.kind = "multi"
+        q.dependsOnSurface = profile.id
+        q.title = ((profile.title()) + ": which devices?")
+        q.help = "One app, not one build each. These change the manifest, the minimum version and what the store says the app runs on."
+        q.minPicked = 1
+        def already:[string] (cfg.devicesOf(profile.id))
+        def fallback:[string] (profile.devicesDefault())
+        for (profile.devicesKnown()) d:string i {
+            def o:WizardOption (WizardOption.of(d (profile.deviceLabel(d)) (profile.deviceHint(d))))
+            if ((array_length already) > 0) {
+                o.picked = (StarterText.includes(already d))
+            } {
+                ; A configuration being re-opened keeps its answer; a fresh one
+                ; starts on the profile's default, so the question can be
+                ; confirmed without reading it.
+                o.picked = (StarterText.includes(fallback d))
+            }
+            push q.options o
+        }
+        return q
+    }
+
+    sfn targetHint:string (t:StarterTarget) {
+        def parts:[string]
+        if (t.tier == "reference") {
+            push parts "the reference target"
+        }
+        if (t.tier == "experimental") {
+            push parts "experimental"
+        }
+        if ((strlen t.packaging) > 0) {
+            push parts (t.packaging + " packaging")
+        }
+        if (t.runsLocally) {
+            push parts "runs here"
+        }
+        return (StarterText.joinWith(parts ", "))
+    }
+
+    sfn docsQuestion:WizardQuestion (cfg:StarterConfig) {
+        def q (new WizardQuestion())
+        q.id = "docs"
+        q.kind = "single"
+        q.title = "Generate API documentation?"
+        q.help = "From `doc { ... }` blocks in the source. Strict makes an undocumented public declaration a build failure rather than a warning."
+        push q.options (WizardOption.of("none" "No" "no docs scripts, and no documentation section in AGENTS.md"))
+        push q.options (WizardOption.of("api" "Yes" "npm run docs, and npm run docs:check"))
+        push q.options (WizardOption.of("strict" "Yes, and enforce it" "docs:check runs with -apistrict"))
+        def chosen:string "none"
+        if (cfg.docsEnabled()) {
+            chosen = "api"
+            if (cfg.docsStrict()) {
+                chosen = "strict"
+            }
+        }
+        q.pickOnly(chosen)
+        q.cursor = 0
+        if (chosen == "api") {
+            q.cursor = 1
+        }
+        if (chosen == "strict") {
+            q.cursor = 2
+        }
+        return q
+    }
+
+    sfn agentsQuestion:WizardQuestion (cfg:StarterConfig) {
+        def q (new WizardQuestion())
+        q.id = "agents"
+        q.kind = "single"
+        q.title = "Instructions for coding agents?"
+        q.help = "AGENTS.md is the generic file every agent reads. CLAUDE.md stays small and points at it. Both are written only between markers, so your own text survives."
+        push q.options (WizardOption.of("generic" "AGENTS.md" "the build commands, the syntax traps, the generated-file policy"))
+        push q.options (WizardOption.of("both" "AGENTS.md + CLAUDE.md" "and the skills this project installs"))
+        push q.options (WizardOption.of("none" "Neither" "nothing is written for agents"))
+        def chosen:string "none"
+        if (cfg.wantsAgentsMd()) {
+            chosen = "generic"
+            if (cfg.wantsClaudeMd()) {
+                chosen = "both"
+            }
+        }
+        q.pickOnly(chosen)
+        q.cursor = 0
+        if (chosen == "both") {
+            q.cursor = 1
+        }
+        if (chosen == "none") {
+            q.cursor = 2
+        }
+        return q
+    }
+
+    sfn ciQuestion:WizardQuestion (cfg:StarterConfig) {
+        def q (new WizardQuestion())
+        q.id = "ci"
+        q.kind = "single"
+        q.title = "A GitHub Actions workflow?"
+        q.help = "It runs what you run: npm install, npm test, a build per target, and the documentation check if it is on."
+        push q.options (WizardOption.of("yes" "Yes" ".github/workflows/ci.yml"))
+        push q.options (WizardOption.of("no" "No" "nothing is written under .github"))
+        def chosen:string "no"
+        if (cfg.wantsGithubCi()) {
+            chosen = "yes"
+        }
+        q.pickOnly(chosen)
+        q.cursor = 1
+        if (chosen == "yes") {
+            q.cursor = 0
+        }
+        return q
+    }
+
+    sfn reviewQuestion:WizardQuestion () {
+        def q (new WizardQuestion())
+        q.id = "review"
+        q.kind = "review"
+        q.title = "Ready?"
+        q.help = "This writes `ranger.project.json` and generates the project from it. Nothing is overwritten that you have edited."
+        return q
+    }
+
+    ; --- navigation -----------------------------------------------------------
+
+    fn current:WizardQuestion () {
+        if (index < 0) {
+            index = 0
+        }
+        def cnt:int (array_length questions)
+        if (index >= cnt) {
+            index = cnt - 1
+        }
+        return (itemAt questions index)
+    }
+
+    fn questionById@(optional):WizardQuestion (id:string) {
+        for questions q:WizardQuestion i {
+            if (q.id == id) {
+                def hit@(optional):WizardQuestion q
+                return hit
+            }
+        }
+        def miss@(optional):WizardQuestion
+        return miss
+    }
+
+    fn chosenSurfaces:[string] () {
+        def hit@(optional):WizardQuestion (this.questionById("surfaces"))
+        if (null? hit) {
+            def none:[string]
+            return none
+        }
+        def q:WizardQuestion (unwrap hit)
+        return (q.pickedIds())
+    }
+
+    ; A target question is only asked when its surface is chosen.
+    fn isRelevant:boolean (q:WizardQuestion) {
+        if ((strlen q.dependsOnSurface) == 0) {
+            return true
+        }
+        return (StarterText.includes((this.chosenSurfaces()) q.dependsOnSurface))
+    }
+
+    ; How many screens there are, and which one this is -- counting only the ones
+    ; that will actually be asked, so the counter does not jump.
+    fn stepCount:int () {
+        def n:int 0
+        for questions q:WizardQuestion i {
+            if (this.isRelevant(q)) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    fn stepNumber:int () {
+        def n:int 0
+        def i:int 0
+        while (i <= index) {
+            def q:WizardQuestion (itemAt questions i)
+            if (this.isRelevant(q)) {
+                n = n + 1
+            }
+            i = i + 1
+        }
+        return n
+    }
+
+    fn advance:void () {
+        def cnt:int (array_length questions)
+        def i:int (index + 1)
+        while (i < cnt) {
+            def q:WizardQuestion (itemAt questions i)
+            if (this.isRelevant(q)) {
+                index = i
+                return
+            }
+            i = i + 1
+        }
+        done = true
+    }
+
+    fn retreat:void () {
+        def i:int (index - 1)
+        while (i >= 0) {
+            def q:WizardQuestion (itemAt questions i)
+            if (this.isRelevant(q)) {
+                index = i
+                return
+            }
+            i = i - 1
+        }
+    }
+
+    ; --- keys -----------------------------------------------------------------
+
+    fn onKey:void (key:string) {
+        if (done) {
+            return
+        }
+        if (cancelled) {
+            return
+        }
+        def q:WizardQuestion (this.current())
+        q.problem = ""
+
+        if (key == "escape") {
+            cancelled = true
+            return
+        }
+        if (key == "up") {
+            if (q.cursor > 0) {
+                q.cursor = q.cursor - 1
+            }
+            return
+        }
+        if (key == "down") {
+            if ((q.cursor + 1) < (array_length q.options)) {
+                q.cursor = q.cursor + 1
+            }
+            return
+        }
+        if (key == "left") {
+            this.retreat()
+            return
+        }
+        if (key == "space") {
+            this.onToggle(q)
+            return
+        }
+        if (key == "return") {
+            this.onConfirm(q)
+            return
+        }
+        if (key == "backspace") {
+            if (q.kind == "text") {
+                def n:int (strlen q.text)
+                if (n > 0) {
+                    q.text = (substring q.text 0 (n - 1))
+                }
+                return
+            }
+            this.retreat()
+            return
+        }
+        if (q.kind == "text") {
+            this.onTypedCharacter(q key)
+        }
+    }
+
+    ; A key that is one character long is a character; anything longer is a key
+    ; name this wizard does not use ("pageup", "f5") and is ignored rather than
+    ; typed into the answer.
+    fn onTypedCharacter:void (q:WizardQuestion key:string) {
+        if ((strlen key) != 1) {
+            return
+        }
+        q.text = (q.text + key)
+    }
+
+    fn onToggle:void (q:WizardQuestion) {
+        if (q.kind == "text") {
+            ; A space in a name is never what was meant: npm rejects it and so
+            ; does every identifier derived from it.
+            q.problem = "a name cannot contain a space. Use `-` or `_`."
+            return
+        }
+        def hit@(optional):WizardOption (q.optionAt(q.cursor))
+        if (null? hit) {
+            return
+        }
+        def o:WizardOption (unwrap hit)
+        if ((o.available) == false) {
+            q.problem = (o.label + " is " + o.hint)
+            return
+        }
+        if (q.kind == "single") {
+            q.pickOnly(o.id)
+            return
+        }
+        if (q.kind == "multi") {
+            o.picked = ((o.picked) == false)
+        }
+    }
+
+    fn onConfirm:void (q:WizardQuestion) {
+        switch q.kind {
+            case "text" {
+                def problem:string (StarterWizard.nameProblem(q.text))
+                if ((strlen problem) > 0) {
+                    q.problem = problem
+                    return
+                }
+                projectName = q.text
+                this.advance()
+            }
+            case "single" {
+                ; `return` takes the row the cursor is on. Requiring `space` first
+                ; looked reasonable and was wrong: every screen opens with a
+                ; default already ticked, so moving the cursor and pressing return
+                ; silently kept the default and the answer was lost.
+                def hit@(optional):WizardOption (q.optionAt(q.cursor))
+                if (null? hit) {
+                    return
+                }
+                def o:WizardOption (unwrap hit)
+                if ((o.available) == false) {
+                    q.problem = (o.label + " is " + o.hint)
+                    return
+                }
+                q.pickOnly(o.id)
+                this.advance()
+            }
+            case "multi" {
+                if ((q.countPicked()) < q.minPicked) {
+                    q.problem = ("pick at least " + (to_string q.minPicked) + ". Space toggles the row the cursor is on.")
+                    return
+                }
+                this.advance()
+            }
+            case "review" {
+                done = true
+            }
+        }
+    }
+
+    ; The same rule the planner validates with, so the wizard cannot produce a
+    ; name the planner then rejects.
+    sfn nameProblem:string (name:string) {
+        if ((strlen name) == 0) {
+            return "a name is needed."
+        }
+        def first:int (charAt name 0)
+        def firstOk:boolean false
+        if (first >= 97) {
+            if (first <= 122) {
+                firstOk = true
+            }
+        }
+        if (firstOk == false) {
+            return "it has to start with a lowercase letter."
+        }
+        def cnt:int (strlen name)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt name i)
+            def okChar:boolean false
+            if (c >= 97) {
+                if (c <= 122) {
+                    okChar = true
+                }
+            }
+            if (c >= 48) {
+                if (c <= 57) {
+                    okChar = true
+                }
+            }
+            if (c == 45) {
+                okChar = true
+            }
+            if (c == 95) {
+                okChar = true
+            }
+            if (okChar == false) {
+                return ("`" + (strfromcode c) + "` cannot be in an npm package name. Lowercase letters, digits, `-` and `_`.")
+            }
+            i = i + 1
+        }
+        return ""
+    }
+
+    ; --- the answers, as a configuration --------------------------------------
+
+    fn configOf:StarterConfig () {
+        def kindId:string "application"
+        def kindQ@(optional):WizardQuestion (this.questionById("kind"))
+        if ((null? kindQ) == false) {
+            def kq:WizardQuestion (unwrap kindQ)
+            def picked:string (kq.firstPicked())
+            if ((strlen picked) > 0) {
+                kindId = picked
+            }
+        }
+        def cfg:StarterConfig (StarterConfig.defaults(projectName kindId))
+
+        def chosen:[string] (this.chosenSurfaces())
+        for chosen sid:string i {
+            cfg.setEnabled(sid true)
+            def tq@(optional):WizardQuestion (this.questionById(("targets:" + sid)))
+            if ((null? tq) == false) {
+                def q:WizardQuestion (unwrap tq)
+                cfg.setTargets(sid (q.pickedIds()))
+            }
+            def dq@(optional):WizardQuestion (this.questionById(("devices:" + sid)))
+            if ((null? dq) == false) {
+                def d:WizardQuestion (unwrap dq)
+                cfg.setDevices(sid (d.pickedIds()))
+            }
+        }
+
+        def docsChoice:string (this.singleAnswer("docs" "none"))
+        if (docsChoice == "api") {
+            cfg.setDocs(true true false)
+        }
+        if (docsChoice == "strict") {
+            cfg.setDocs(true true true)
+        }
+
+        def agentsChoice:string (this.singleAnswer("agents" "generic"))
+        if (agentsChoice == "generic") {
+            cfg.setAgents(true false "auto")
+        }
+        if (agentsChoice == "both") {
+            cfg.setAgents(true true "auto")
+        }
+        if (agentsChoice == "none") {
+            cfg.setAgents(false false "none")
+        }
+
+        def ciChoice:string (this.singleAnswer("ci" "no"))
+        if (ciChoice == "yes") {
+            cfg.setCi(true true)
+        } {
+            cfg.setCi(false false)
+        }
+        return cfg
+    }
+
+    fn singleAnswer:string (id:string fallback:string) {
+        def hit@(optional):WizardQuestion (this.questionById(id))
+        if (null? hit) {
+            return fallback
+        }
+        def q:WizardQuestion (unwrap hit)
+        def picked:string (q.firstPicked())
+        if ((strlen picked) == 0) {
+            return fallback
+        }
+        return picked
+    }
+}

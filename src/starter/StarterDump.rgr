@@ -1,0 +1,61 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterDump -- print the plan for a configuration built in code.
+;
+; A debugging tool, and the way a golden expectation is written in the first
+; place: build a configuration, print what the planner and the generator make of
+; it, read it, and only then paste it into a test. A golden file written by
+; guessing is a golden file that locks in a bug.
+;
+;   scripts/rgr run src/starter/StarterDump.rgr
+
+Import "StarterPlanner.rgr"
+Import "StarterGenerator.rgr"
+Import "StarterHost.rgr"
+
+class StarterDump {
+
+    Constructor () {
+    }
+
+    sfn cliConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("cli" true)
+        def ts:[string]
+        push ts "es6"
+        push ts "go"
+        cfg.setTargets("cli" ts)
+        cfg.setAgents(true true "auto")
+        cfg.setDocs(true true false)
+        return cfg
+    }
+
+    sfn show:void (label:string cfg:StarterConfig) {
+        def targets:StarterTargets (StarterTargets.bundled())
+        ; The real skill texts, read from `templates/` the way the CLI reads them,
+        ; so a dump shows the skills a real apply would install.
+        def host (new StarterHost())
+        def assets:StarterAssets (host.loadAssets())
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
+        def disk (new DiskState())
+        def filePlan:FilePlan (StarterGenerator.plan(project disk))
+        print ""
+        print ("=== " + label + " ===")
+        print (filePlan.asText())
+        print ("-- " + (filePlan.summary()))
+        print ""
+        print "--- package.json ---"
+        def pkg@(optional):PlanFile (project.fileAt("package.json"))
+        if ((null? pkg) == false) {
+            def f:PlanFile (unwrap pkg)
+            print f.contents
+        }
+        print "--- manifest ---"
+        def normalized:StarterManifest (filePlan.manifest.normalized())
+        print (normalized.asText())
+    }
+
+    sfn m@(main):void () {
+        StarterDump.show("application, cli on es6 + go, docs and agents" (StarterDump.cliConfig()))
+    }
+}

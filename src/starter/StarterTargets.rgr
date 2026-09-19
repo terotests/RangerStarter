@@ -1,0 +1,248 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterTargets -- which compiler targets exist, and what each one needs.
+;
+; THE RULE THIS FILE ENFORCES: the fourteen target names are written down in
+; exactly one place in this repository, and that place is a FALLBACK. The real
+; answer comes from the compiler:
+;
+;     rgrc -targets -json
+;
+; which does not exist in `ranger-compiler` 3.5.1 -- the version `npm install`
+; resolves today -- and is a small addition to `compiler/VirtualCompiler.rgr`,
+; where the list already sits as `allowed_languages`. Until it lands, `source`
+; reads "bundled" and `doctor` says so. After it lands, nothing in the starter
+; changes except which branch of `load` runs.
+;
+; `tier` is the field that most wants the compiler's own answer. The bundled
+; table can only say what this repository can observe: es6 is the reference
+; target, `npm run targets:run` runs es6, python and go, and llvm is
+; experimental. Everything else is "supported", which here means "it compiles
+; and the target notes cover it", not "somebody ran your program on it".
+
+Import "StarterJson.rgr"
+
+class StarterTarget {
+
+    def id:string ""
+    def name:string ""
+
+    ; "reference" | "supported" | "experimental"
+    def tier:string "supported"
+
+    ; The extension the compiler writes, which `scripts/rgr` also needs to know.
+    def ext:string ""
+
+    ; The ecosystem manifest `-apipackage` can write beside the source, or "" for
+    ; a target that has none. A library surface on a target with no packaging
+    ; gets a build file written by its profile instead.
+    def packaging:string ""
+
+    ; A variant is not a `-l=` value: `typescript` is `-l=es6 -typescript`. The
+    ; wizard offers it as a target; the generator has to know it is not one.
+    def variantOf:string ""
+
+    ; Whether `targets.sh --run` can execute it on a developer machine without a
+    ; platform toolchain. These three are what a portability claim is checked on.
+    def runsLocally:boolean false
+
+    Constructor () {
+    }
+
+    fn isVariant:boolean () {
+        return ((strlen variantOf) > 0)
+    }
+
+    ; The `-l=` value to compile this target with: itself, or what it is a
+    ; variant of.
+    fn languageFlag:string () {
+        if ((strlen variantOf) > 0) {
+            return variantOf
+        }
+        return id
+    }
+}
+
+class StarterTargets {
+
+    def list:[StarterTarget]
+
+    ; "compiler" when `rgrc -targets -json` answered, "bundled" otherwise.
+    def source:string "bundled"
+
+    Constructor () {
+    }
+
+    sfn newTarget:StarterTarget (id:string name:string tier:string ext:string packaging:string runsLocally:boolean) {
+        def t (new StarterTarget())
+        t.id = id
+        t.name = name
+        t.tier = tier
+        t.ext = ext
+        t.packaging = packaging
+        t.runsLocally = runsLocally
+        return t
+    }
+
+    ; The bundled table, in the compiler's own order -- the order
+    ; `allowed_languages` is written in, so a diff against the compiler's answer
+    ; reads as a diff and not as a reordering.
+    sfn bundled:StarterTargets () {
+        def ts (new StarterTargets())
+        ts.source = "bundled"
+        push ts.list (StarterTargets.newTarget("es6" "JavaScript (ES6)" "reference" "js" "npm" true))
+        push ts.list (StarterTargets.newTarget("go" "Go" "supported" "go" "" true))
+        push ts.list (StarterTargets.newTarget("scala" "Scala" "supported" "scala" "" false))
+        push ts.list (StarterTargets.newTarget("java7" "Java" "supported" "java" "" false))
+        push ts.list (StarterTargets.newTarget("swift3" "Swift 3" "supported" "swift" "" false))
+        push ts.list (StarterTargets.newTarget("swift6" "Swift 6" "supported" "swift" "swiftpm" false))
+        push ts.list (StarterTargets.newTarget("kotlin" "Kotlin" "supported" "kt" "gradle" false))
+        push ts.list (StarterTargets.newTarget("dart" "Dart" "supported" "dart" "pub" false))
+        push ts.list (StarterTargets.newTarget("cpp" "C++" "supported" "cpp" "" false))
+        push ts.list (StarterTargets.newTarget("php" "PHP" "supported" "php" "" false))
+        push ts.list (StarterTargets.newTarget("csharp" "C#" "supported" "cs" "nuget" false))
+        push ts.list (StarterTargets.newTarget("python" "Python" "supported" "py" "pip" true))
+        push ts.list (StarterTargets.newTarget("rust" "Rust" "supported" "rs" "" false))
+        push ts.list (StarterTargets.newTarget("llvm" "LLVM IR" "experimental" "ll" "" false))
+
+        ; Not a `-l=` value. It is offered to the author because it is what they
+        ; asked for; it compiles as es6 with `-typescript`.
+        def ts6:StarterTarget (StarterTargets.newTarget("typescript" "TypeScript" "supported" "ts" "npm" true))
+        ts6.variantOf = "es6"
+        push ts.list ts6
+        return ts
+    }
+
+    ; Read `rgrc -targets -json`. Anything missing falls back to the bundled
+    ; entry for the same id, so a compiler that answers only ids still improves
+    ; on the bundled table by being authoritative about WHICH ids exist.
+    sfn fromJson:StarterTargets (root:JsonValue) {
+        def fallback:StarterTargets (StarterTargets.bundled())
+        if ((root.isArray()) == false) {
+            return fallback
+        }
+        if ((root.itemCount()) == 0) {
+            return fallback
+        }
+        def ts (new StarterTargets())
+        ts.source = "compiler"
+        for root.items item:JsonValue i {
+            if ((item.isObject()) == false) {
+                continue
+            }
+            def id:string (item.getText("id" ""))
+            if ((strlen id) == 0) {
+                continue
+            }
+            def known@(optional):StarterTarget (fallback.find(id))
+            def t (new StarterTarget())
+            t.id = id
+            if (null? known) {
+                t.name = id
+                t.ext = id
+            } {
+                def k:StarterTarget (unwrap known)
+                t.name = k.name
+                t.tier = k.tier
+                t.ext = k.ext
+                t.packaging = k.packaging
+                t.variantOf = k.variantOf
+                t.runsLocally = k.runsLocally
+            }
+            t.name = (item.getText("name" t.name))
+            t.tier = (item.getText("tier" t.tier))
+            t.ext = (item.getText("ext" t.ext))
+            t.packaging = (item.getText("packaging" t.packaging))
+            push ts.list t
+        }
+        ; A variant the compiler does not know about is still offered, because it
+        ; is a compiler flag rather than a target.
+        for fallback.list f:StarterTarget i {
+            if (f.isVariant()) {
+                def already@(optional):StarterTarget (ts.find(f.id))
+                if (null? already) {
+                    push ts.list f
+                }
+            }
+        }
+        return ts
+    }
+
+    fn find@(optional):StarterTarget (id:string) {
+        for list t:StarterTarget i {
+            if (t.id == id) {
+                def hit@(optional):StarterTarget t
+                return hit
+            }
+        }
+        def miss@(optional):StarterTarget
+        return miss
+    }
+
+    fn isKnown:boolean (id:string) {
+        def hit@(optional):StarterTarget (this.find(id))
+        if (null? hit) {
+            return false
+        }
+        return true
+    }
+
+    fn ids:[string] () {
+        def out:[string]
+        for list t:StarterTarget i {
+            push out t.id
+        }
+        return out
+    }
+
+    ; The extension for a target id, or "" when it is not one. `scripts/rgr`
+    ; carries the same table today; once this is the only copy, it reads it.
+    fn extensionOf:string (id:string) {
+        def hit@(optional):StarterTarget (this.find(id))
+        if (null? hit) {
+            return ""
+        }
+        def t:StarterTarget (unwrap hit)
+        return t.ext
+    }
+
+    fn languageFlagOf:string (id:string) {
+        def hit@(optional):StarterTarget (this.find(id))
+        if (null? hit) {
+            return id
+        }
+        def t:StarterTarget (unwrap hit)
+        return (t.languageFlag())
+    }
+
+    fn packagingOf:string (id:string) {
+        def hit@(optional):StarterTarget (this.find(id))
+        if (null? hit) {
+            return ""
+        }
+        def t:StarterTarget (unwrap hit)
+        return t.packaging
+    }
+
+    ; Sort a set of target ids into the table's order, so two configurations that
+    ; chose the same targets in a different sequence plan the same project.
+    fn inTableOrder:[string] (wanted:[string]) {
+        def out:[string]
+        for list t:StarterTarget i {
+            for wanted w:string j {
+                if (w == t.id) {
+                    def seen:boolean false
+                    for out o:string k {
+                        if (o == t.id) {
+                            seen = true
+                        }
+                    }
+                    if (seen == false) {
+                        push out t.id
+                    }
+                }
+            }
+        }
+        return out
+    }
+}

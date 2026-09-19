@@ -1,0 +1,338 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterMarkdown -- managed regions in a Markdown file.
+;
+; README.md, AGENTS.md and CLAUDE.md belong to the author. The tool has things to
+; say in them that must change when the configuration changes -- the command
+; list, the per-surface rules, the documentation policy -- and it must be able to
+; say them again next time without eating a paragraph somebody wrote.
+;
+; So a generated region is delimited:
+;
+;     <!-- ranger:start build-commands -->
+;     ...the tool's text...
+;     <!-- ranger:end build-commands -->
+;
+; and EVERYTHING OUTSIDE THE MARKERS IS PRESERVED BYTE FOR BYTE. Inside them,
+; the tool's text replaces whatever was there.
+;
+; Three cases, and the third is the one that makes turning a surface off work:
+;
+;   * a region the plan has and the file has      -> replaced
+;   * a region the plan has and the file does not -> appended, in rank order
+;   * a region the FILE has and the plan does not -> removed
+;
+; The last is how the Android section leaves AGENTS.md when Android is switched
+; off. It is safe because the markers are the tool's own: a region carrying them
+; was written by the tool, whatever version of it.
+;
+; An `id` is therefore part of the tool's compatibility surface. Renaming one
+; orphans the region already sitting in somebody's file -- it would be removed as
+; unknown and the new one appended at the bottom, which is a diff nobody asked
+; for. Add ids; do not rename them.
+
+Import "StarterPlan.rgr"
+Import "StarterText.rgr"
+
+class MarkdownRegion {
+
+    def id:string ""
+
+    ; Line indices into the split file. `startLine` is the marker, `endLine` is
+    ; the closing marker.
+    def startLine:int 0
+    def endLine:int 0
+
+    Constructor () {
+    }
+}
+
+; What a merge did, so the plan can say "updated AGENTS.md: 2 sections replaced,
+; 1 removed" rather than "wrote AGENTS.md".
+class MarkdownMerge {
+
+    def text:string ""
+    def problem:string ""
+    def replaced:[string]
+    def appended:[string]
+    def removed:[string]
+
+    Constructor () {
+    }
+
+    fn ok:boolean () {
+        return ((strlen problem) == 0)
+    }
+
+    ; How many regions the merge touched. NOT "did the text change": rewriting a
+    ; region with identical content counts here and changes nothing on disk.
+    ; Whether a write is needed is decided by comparing the text, which is what
+    ; the generator does -- a method called `changed` that answered this number
+    ; would be read as the other question and get it wrong.
+    fn touchedCount:int () {
+        return ((array_length replaced) + (array_length appended) + (array_length removed))
+    }
+
+    fn summary:string () {
+        def parts:[string]
+        if ((array_length replaced) > 0) {
+            push parts ((to_string (array_length replaced)) + " replaced")
+        }
+        if ((array_length appended) > 0) {
+            push parts ((to_string (array_length appended)) + " added")
+        }
+        if ((array_length removed) > 0) {
+            push parts ((to_string (array_length removed)) + " removed")
+        }
+        if ((array_length parts) == 0) {
+            return "no managed section changed"
+        }
+        return (StarterText.joinWith(parts ", "))
+    }
+}
+
+class StarterMarkdown {
+
+    Constructor () {
+    }
+
+    sfn startMarker:string (id:string) {
+        return ("<!-- ranger:start " + id + " -->")
+    }
+
+    sfn endMarker:string (id:string) {
+        return ("<!-- ranger:end " + id + " -->")
+    }
+
+    ; The id on a marker line, or "" when the line is not one. Matching is on the
+    ; trimmed line, so a marker indented inside a list item still counts.
+    sfn idOnLine:string (line:string prefix:string) {
+        def t:string (trim line)
+        if ((startsWith t prefix) == false) {
+            return ""
+        }
+        if ((endsWith t " -->") == false) {
+            return ""
+        }
+        def from:int (strlen prefix)
+        def to:int ((strlen t) - 4)
+        if (to <= from) {
+            return ""
+        }
+        return (trim (substring t from to))
+    }
+
+    ; One region, as text. A blank line inside the markers on both sides, so the
+    ; region reads as a paragraph in a rendered file and a diff of the body does
+    ; not touch the marker lines.
+    sfn renderRegion:string (id:string body:string) {
+        def out:string (StarterMarkdown.startMarker(id))
+        out = out + "\n\n"
+        out = out + (StarterText.oneTrailingNewline(body))
+        out = out + "\n"
+        out = out + (StarterMarkdown.endMarker(id))
+        out = out + "\n"
+        return out
+    }
+
+    ; A whole file, from nothing. Used when the file does not exist; the merge
+    ; path is used when it does, and the two agree because both build a region
+    ; through `renderRegion`.
+    sfn render:string (sections:[PlanSection]) {
+        def out:string ""
+        for sections s:PlanSection i {
+            if (i > 0) {
+                out = out + "\n"
+            }
+            out = out + (StarterMarkdown.renderRegion(s.id s.body))
+        }
+        return (StarterText.oneTrailingNewline(out))
+    }
+
+    ; Find the managed regions of a file. A start without an end is an error
+    ; rather than a guess: the alternative is deleting the rest of the file.
+    sfn regionsOf:[MarkdownRegion] (lines:[string]) {
+        def out:[MarkdownRegion]
+        def openId:string ""
+        def openAt:int -1
+        def n:int (array_length lines)
+        def i:int 0
+        while (i < n) {
+            def line:string (itemAt lines i)
+            def sid:string (StarterMarkdown.idOnLine(line "<!-- ranger:start "))
+            def eid:string (StarterMarkdown.idOnLine(line "<!-- ranger:end "))
+            if ((strlen sid) > 0) {
+                openId = sid
+                openAt = i
+            }
+            if ((strlen eid) > 0) {
+                if (eid == openId) {
+                    def r (new MarkdownRegion())
+                    r.id = openId
+                    r.startLine = openAt
+                    r.endLine = i
+                    push out r
+                    openId = ""
+                    openAt = -1
+                }
+            }
+            i = i + 1
+        }
+        return out
+    }
+
+    sfn unterminatedId:string (lines:[string]) {
+        def openId:string ""
+        def n:int (array_length lines)
+        def i:int 0
+        while (i < n) {
+            def line:string (itemAt lines i)
+            def sid:string (StarterMarkdown.idOnLine(line "<!-- ranger:start "))
+            def eid:string (StarterMarkdown.idOnLine(line "<!-- ranger:end "))
+            if ((strlen sid) > 0) {
+                openId = sid
+            }
+            if ((strlen eid) > 0) {
+                if (eid == openId) {
+                    openId = ""
+                }
+            }
+            i = i + 1
+        }
+        return openId
+    }
+
+    sfn regionStartingAt@(optional):MarkdownRegion (regions:[MarkdownRegion] line:int) {
+        for regions r:MarkdownRegion i {
+            if (r.startLine == line) {
+                def hit@(optional):MarkdownRegion r
+                return hit
+            }
+        }
+        def miss@(optional):MarkdownRegion
+        return miss
+    }
+
+    sfn sectionWithId@(optional):PlanSection (sections:[PlanSection] id:string) {
+        for sections s:PlanSection i {
+            if (s.id == id) {
+                def hit@(optional):PlanSection s
+                return hit
+            }
+        }
+        def miss@(optional):PlanSection
+        return miss
+    }
+
+    ; Merge `sections` into `existing`.
+    sfn merge:MarkdownMerge (existing:string sections:[PlanSection]) {
+        def result (new MarkdownMerge())
+        def crlf:boolean (StarterText.usesCrLf(existing))
+        def lines:[string] (StarterText.lines(existing))
+
+        def dangling:string (StarterMarkdown.unterminatedId(lines))
+        if ((strlen dangling) > 0) {
+            result.problem = ("the managed section `" + dangling + "` has no `<!-- ranger:end " + dangling + " -->`. Close it, or delete the marker, and run this again.")
+            result.text = existing
+            return result
+        }
+
+        def regions:[MarkdownRegion] (StarterMarkdown.regionsOf(lines))
+        def out:[string]
+        def n:int (array_length lines)
+        def i:int 0
+        while (i < n) {
+            ; The region lookup is a function of `i` alone. Walking the region
+            ; list here and advancing `i` inside that walk would compare the
+            ; ALREADY ADVANCED `i` against the remaining regions' start lines,
+            ; and a file with two adjacent regions would splice the second one
+            ; twice.
+            def here@(optional):MarkdownRegion (StarterMarkdown.regionStartingAt(regions i))
+            if (null? here) {
+                push out (itemAt lines i)
+                i = i + 1
+                continue
+            }
+            def r:MarkdownRegion (unwrap here)
+            def wanted@(optional):PlanSection (StarterMarkdown.sectionWithId(sections r.id))
+            if (null? wanted) {
+                ; The plan no longer has this section: the surface that
+                ; contributed it was turned off. The region goes, and so does the
+                ; blank line it was separated by, when there is one.
+                push result.removed r.id
+                if ((array_length out) > 0) {
+                    def lastIdx:int ((array_length out) - 1)
+                    if ((strlen (itemAt out lastIdx)) == 0) {
+                        remove_index out lastIdx
+                    }
+                }
+            } {
+                def s:PlanSection (unwrap wanted)
+                def rendered:string (StarterMarkdown.renderRegion(s.id s.body))
+                def renderedLines:[string] (StarterText.lines(rendered))
+                ; `lines` on text ending in a newline answers a trailing empty
+                ; element; the region is spliced in without it.
+                def keep:int ((array_length renderedLines) - 1)
+                def k:int 0
+                while (k < keep) {
+                    push out (itemAt renderedLines k)
+                    k = k + 1
+                }
+                push result.replaced r.id
+            }
+            i = r.endLine + 1
+        }
+
+        ; Whatever the plan has and the file did not, appended in the order the
+        ; plan gives -- which is rank order, so a file built up over several runs
+        ; ends in the same shape as one written in a single pass.
+        def tail:string ""
+        for sections s:PlanSection si {
+            def already:boolean false
+            for regions r:MarkdownRegion ri {
+                if (r.id == s.id) {
+                    already = true
+                }
+            }
+            if (already == false) {
+                push result.appended s.id
+                tail = tail + "\n" + (StarterMarkdown.renderRegion(s.id s.body))
+            }
+        }
+
+        def body:string (StarterText.unlines(out crlf))
+        body = (StarterText.oneTrailingNewline(body))
+        if ((strlen tail) > 0) {
+            body = body + tail
+            body = (StarterText.oneTrailingNewline(body))
+        }
+        if crlf {
+            ; The file used CRLF, so what is written back does. A merge that
+            ; silently converts line endings turns a two-line change into a
+            ; whole-file diff, which is the thing this mechanism exists to avoid.
+            body = (StarterMarkdown.toCrLf(body))
+        }
+        result.text = body
+        return result
+    }
+
+    sfn toCrLf:string (text:string) {
+        def out:string ""
+        def cnt:int (strlen text)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt text i)
+            if (c == 13) {
+                i = i + 1
+                continue
+            }
+            if (c == 10) {
+                out = out + "\r\n"
+            } {
+                out = out + (strfromcode c)
+            }
+            i = i + 1
+        }
+        return out
+    }
+}

@@ -1,0 +1,479 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterText -- the text operations the generator needs that are not operators,
+; and the one that is an operator but must not be trusted across targets.
+;
+; SORTING IS THE REASON THIS FILE EXISTS. Every list the generator writes --
+; scripts in `package.json`, files in the plan, dependencies -- is sorted, so that
+; two runs which contributed the same things in a different order produce the
+; same file. `<` on a string is the target's comparison, and the targets do not
+; agree on it: Go compares bytes, JavaScript compares UTF-16 code units, Python
+; compares codepoints, and some ecosystems will happily apply a locale. A
+; generated file that reorders itself depending on which target wrote it is a
+; diff, so the comparison is written here, over codepoints, once.
+
+class StarterText {
+
+    Constructor () {
+    }
+
+    ; True when `a` sorts before `b`, comparing codepoint by codepoint. Shorter
+    ; wins on a shared prefix.
+    sfn lessThan:boolean (a:string b:string) {
+        def la:int (strlen a)
+        def lb:int (strlen b)
+        def n:int la
+        if (lb < n) {
+            n = lb
+        }
+        def i:int 0
+        while (i < n) {
+            def ca:int (charAt a i)
+            def cb:int (charAt b i)
+            if (ca < cb) {
+                return true
+            }
+            if (ca > cb) {
+                return false
+            }
+            i = i + 1
+        }
+        return (la < lb)
+    }
+
+    ; Insertion sort. The lists here are tens of items, and an insertion sort is
+    ; stable, which a generated file wants: two entries that compare equal keep
+    ; the order they were contributed in.
+    sfn sorted:[string] (input:[string]) {
+        def out:[string]
+        for input item:string i {
+            def placed:boolean false
+            def rebuilt:[string]
+            for out existing:string j {
+                if (placed == false) {
+                    if (StarterText.lessThan(item existing)) {
+                        push rebuilt item
+                        placed = true
+                    }
+                }
+                push rebuilt existing
+            }
+            if (placed == false) {
+                push rebuilt item
+            }
+            out = rebuilt
+        }
+        return out
+    }
+
+    sfn unique:[string] (input:[string]) {
+        def out:[string]
+        for input item:string i {
+            def seen:boolean false
+            for out kept:string j {
+                if (kept == item) {
+                    seen = true
+                }
+            }
+            if (seen == false) {
+                push out item
+            }
+        }
+        return out
+    }
+
+    sfn includes:boolean (list:[string] wanted:string) {
+        for list item:string i {
+            if (item == wanted) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; Split on newlines, tolerating CRLF. A generated file is written with LF, but
+    ; the file being MERGED INTO may be a checkout with CRLF endings, and a merge
+    ; that turns a two-line change into a whole-file rewrite is exactly what the
+    ; managed-section mechanism exists to avoid.
+    sfn lines:[string] (text:string) {
+        def out:[string]
+        def current:string ""
+        def cnt:int (strlen text)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt text i)
+            if (c == 10) {
+                push out current
+                current = ""
+            } {
+                if (c != 13) {
+                    current = current + (strfromcode c)
+                }
+            }
+            i = i + 1
+        }
+        push out current
+        return out
+    }
+
+    ; True when the text used CRLF endings, so a merge can write them back.
+    sfn usesCrLf:boolean (text:string) {
+        def cnt:int (strlen text)
+        def i:int 0
+        while (i < (cnt - 1)) {
+            if ((charAt text i) == 13) {
+                if ((charAt text (i + 1)) == 10) {
+                    return true
+                }
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    ; `join`, written here rather than used from the language.
+    ;
+    ; The `join` operator emits `strings.Join(...)` on Go and, up to
+    ; ranger-compiler 3.5.1, did not declare the `strings` import -- so a program
+    ; whose only use of that package was `join` produced Go that does not build
+    ; (`undefined: strings`, Ranger ISSUES.md #88). This core is meant to compile
+    ; and RUN on es6, Python and Go with the compiler `npm install` resolves
+    ; today, so it does not use that operator.
+    ;
+    ; Delete this and use `join` once the project's minimum compiler carries the
+    ; fix.
+    sfn joinWith:string (input:[string] sep:string) {
+        def out:string ""
+        def cnt:int (array_length input)
+        def i:int 0
+        while (i < cnt) {
+            if (i > 0) {
+                out = out + sep
+            }
+            out = out + (itemAt input i)
+            i = i + 1
+        }
+        return out
+    }
+
+    sfn unlines:string (input:[string] crlf:boolean) {
+        def sep:string "\n"
+        if crlf {
+            sep = "\r\n"
+        }
+        return (StarterText.joinWith(input sep))
+    }
+
+    ; Trailing blank lines removed, then exactly one newline at the end. Every
+    ; file this program writes ends that way, which is one fewer thing for a diff
+    ; to be about.
+    sfn oneTrailingNewline:string (text:string) {
+        def n:int (strlen text)
+        while (n > 0) {
+            def c:int (charAt text (n - 1))
+            if (c == 10) {
+                n = n - 1
+                continue
+            }
+            if (c == 13) {
+                n = n - 1
+                continue
+            }
+            break
+        }
+        return ((substring text 0 n) + "\n")
+    }
+
+    ; `my-app_2` -> `MyApp2`. Used for a class name and a file name, so it drops
+    ; everything that is not a letter or a digit and capitalises what follows.
+    sfn pascalCase:string (name:string) {
+        def out:string ""
+        def upperNext:boolean true
+        def cnt:int (strlen name)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt name i)
+            def isLower:boolean false
+            def isUpper:boolean false
+            def isDigit:boolean false
+            if (c >= 97) {
+                if (c <= 122) {
+                    isLower = true
+                }
+            }
+            if (c >= 65) {
+                if (c <= 90) {
+                    isUpper = true
+                }
+            }
+            if (c >= 48) {
+                if (c <= 57) {
+                    isDigit = true
+                }
+            }
+            if isLower {
+                if upperNext {
+                    out = out + (strfromcode (c - 32))
+                } {
+                    out = out + (strfromcode c)
+                }
+                upperNext = false
+            } {
+                if isUpper {
+                    out = out + (strfromcode c)
+                    upperNext = false
+                } {
+                    if isDigit {
+                        out = out + (strfromcode c)
+                        upperNext = false
+                    } {
+                        upperNext = true
+                    }
+                }
+            }
+            i = i + 1
+        }
+        if ((strlen out) == 0) {
+            return "App"
+        }
+        ; A class name may not start with a digit on any target Ranger writes.
+        def firstCode:int (charAt out 0)
+        if (firstCode >= 48) {
+            if (firstCode <= 57) {
+                return ("App" + out)
+            }
+        }
+        return out
+    }
+
+    ; The first run of digits in a string, or -1. `v22.1.0` answers 22 and
+    ; `Python 3.12.1` answers 3. It is only meaningful where the caller knows the
+    ; format, which is why `PlanCheck.minMajor` defaults to not checking.
+    sfn firstNumber:int (text:string) {
+        def cnt:int (strlen text)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt text i)
+            if (c >= 48) {
+                if (c <= 57) {
+                    def value:int 0
+                    while (i < cnt) {
+                        def d:int (charAt text i)
+                        if (d < 48) {
+                            return value
+                        }
+                        if (d > 57) {
+                            return value
+                        }
+                        value = (value * 10) + (d - 48)
+                        i = i + 1
+                    }
+                    return value
+                }
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    ; The first line, for a version banner that prints several.
+    sfn firstLine:string (text:string) {
+        def lines:[string] (StarterText.lines(text))
+        for lines line:string i {
+            def t:string (trim line)
+            if ((strlen t) > 0) {
+                return t
+            }
+        }
+        return ""
+    }
+
+    ; The line of a `--version` answer that is actually the version.
+    ;
+    ; `firstLine` is not enough. `gradle --version` prints a blank line, then a
+    ; rule of dashes, then `Gradle 8.14.3`; a JVM with `JAVA_TOOL_OPTIONS` set
+    ; prints a notice first. So: the first line carrying a digit, and carrying
+    ; something other than punctuation -- which is `v22.22.2`, `openjdk 21.0.10`
+    ; and `Gradle 8.14.3`, and is not `------------`.
+    ;
+    ; It falls back to `firstLine` so a program whose version has no digit in it
+    ; is still reported rather than read as absent.
+    sfn versionLine:string (text:string) {
+        def lines:[string] (StarterText.lines(text))
+        for lines line:string i {
+            def t:string (trim line)
+            if ((strlen t) == 0) {
+                continue
+            }
+            def hasDigit:boolean false
+            def hasWord:boolean false
+            def cnt:int (strlen t)
+            def j:int 0
+            while (j < cnt) {
+                def c:int (charAt t j)
+                if (c >= 48) {
+                    if (c <= 57) {
+                        hasDigit = true
+                    }
+                }
+                if (c >= 65) {
+                    if (c <= 90) {
+                        hasWord = true
+                    }
+                }
+                if (c >= 97) {
+                    if (c <= 122) {
+                        hasWord = true
+                    }
+                }
+                j = j + 1
+            }
+            if (hasDigit) {
+                if (hasWord) {
+                    return t
+                }
+            }
+        }
+        return (StarterText.firstLine(text))
+    }
+
+    sfn repeated:string (unit:string times:int) {
+        def out:string ""
+        def i:int 0
+        while (i < times) {
+            out = out + unit
+            i = i + 1
+        }
+        return out
+    }
+
+    ; Wrap on spaces at `width`, never mid-word. A word longer than the width gets
+    ; its own line rather than being cut: a URL or a flag is worth more unbroken
+    ; than the margin is.
+    sfn wrapped:[string] (text:string width:int) {
+        def out:[string]
+        if ((strlen text) == 0) {
+            return out
+        }
+        def words:[string] (strsplit text " ")
+        def line:string ""
+        for words word:string i {
+            if ((strlen word) == 0) {
+                continue
+            }
+            if ((strlen line) == 0) {
+                line = word
+                continue
+            }
+            def candidate:string (line + " " + word)
+            if ((strlen candidate) <= width) {
+                line = candidate
+            } {
+                push out line
+                line = word
+            }
+        }
+        if ((strlen line) > 0) {
+            push out line
+        }
+        return out
+    }
+
+    ; Cut to `width`, with an ellipsis when something was lost. Used for a hint
+    ; that shares a line with a label.
+    sfn clip:string (text:string width:int) {
+        if ((strlen text) <= width) {
+            return text
+        }
+        if (width <= 1) {
+            return (substring text 0 width)
+        }
+        return ((substring text 0 (width - 1)) + "…")
+    }
+
+    sfn padRight:string (text:string width:int) {
+        def n:int (strlen text)
+        if (n >= width) {
+            return text
+        }
+        return (text + (StarterText.repeated(" " (width - n))))
+    }
+
+    ; The last path segment, and everything before it. Paths in a plan are always
+    ; written with `/`, on every host: they are keys in a manifest and lines in a
+    ; golden file before they are anything a filesystem sees.
+    sfn baseName:string (path:string) {
+        def cut:int -1
+        def cnt:int (strlen path)
+        def i:int 0
+        while (i < cnt) {
+            if ((charAt path i) == 47) {
+                cut = i
+            }
+            i = i + 1
+        }
+        if (cut < 0) {
+            return path
+        }
+        return (substring path (cut + 1) cnt)
+    }
+
+    ; The last segment without its extension: `src/Main.rgr` -> `Main`. Used
+    ; wherever a class name is derived from a file name -- `pascalCase` on the
+    ; bare base name would fold the extension into the name and answer `MainRgr`.
+    sfn stemName:string (path:string) {
+        def base:string (StarterText.baseName(path))
+        def cut:int -1
+        def cnt:int (strlen base)
+        def i:int 0
+        while (i < cnt) {
+            if ((charAt base i) == 46) {
+                cut = i
+            }
+            i = i + 1
+        }
+        if (cut <= 0) {
+            return base
+        }
+        return (substring base 0 cut)
+    }
+
+    sfn dirName:string (path:string) {
+        def cut:int -1
+        def cnt:int (strlen path)
+        def i:int 0
+        while (i < cnt) {
+            if ((charAt path i) == 47) {
+                cut = i
+            }
+            i = i + 1
+        }
+        if (cut < 0) {
+            return ""
+        }
+        return (substring path 0 cut)
+    }
+
+    ; Every directory a path needs, outermost first, so a host can create them in
+    ; order without needing a recursive mkdir.
+    sfn parentDirs:[string] (path:string) {
+        def out:[string]
+        def dir:string (StarterText.dirName(path))
+        if ((strlen dir) == 0) {
+            return out
+        }
+        def parts:[string] (strsplit dir "/")
+        def acc:string ""
+        for parts part:string i {
+            if ((strlen part) > 0) {
+                if ((strlen acc) == 0) {
+                    acc = part
+                } {
+                    acc = acc + "/" + part
+                }
+                push out acc
+            }
+        }
+        return out
+    }
+}

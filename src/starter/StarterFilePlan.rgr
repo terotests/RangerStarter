@@ -1,0 +1,333 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterFilePlan -- the actions, and the snapshot of disk they were decided
+; against.
+;
+; A `FilePlan` is what `plan` prints and what `apply` performs. Producing one is
+; pure: it takes the `ProjectPlan` and a `DiskState`, and answers a list of
+; actions. Nothing here opens a file. That is what lets `plan --json` be
+; trustworthy -- an agent reading it is reading the same value `apply` will
+; execute, not a prediction of it.
+;
+; `DiskState` is the seam. The host reads the paths the `ProjectPlan` mentions,
+; plus the manifest, and hands over a snapshot; the tests hand over a snapshot
+; they built in memory. Neither the generator nor the tests can tell the
+; difference, which is the whole point.
+
+Import "StarterPlan.rgr"
+Import "StarterManifest.rgr"
+Import "StarterText.rgr"
+
+; What the tool found on disk, for the paths it cares about.
+class DiskState {
+
+    def texts:[string:string]
+
+    ; Inline, for the same reason as `StarterConfigLoad.config`: a field assigned
+    ; only in the constructor still reads back as optional, and this one is passed
+    ; around.
+    def manifest:StarterManifest (new StarterManifest())
+
+    Constructor () {
+    }
+
+    fn put:void (path:string text:string) {
+        set texts path text
+    }
+
+    fn hasFile:boolean (path:string) {
+        return (has texts path)
+    }
+
+    fn textOf:string (path:string) {
+        def hit@(optional):string (get texts path)
+        if (null? hit) {
+            return ""
+        }
+        return (unwrap hit)
+    }
+
+    fn dropFile:void (path:string) {
+        if ((has texts path) == false) {
+            return
+        }
+        ; There is no operator that removes a key from a map, so the map is
+        ; rebuilt. A snapshot holds the paths one plan mentions -- tens, not
+        ; thousands.
+        def kept:[string:string]
+        def paths:[string] (keys texts)
+        for paths p:string i {
+            if (p != path) {
+                set kept p (this.textOf(p))
+            }
+        }
+        texts = kept
+    }
+
+    fn pathCount:int () {
+        return (array_length (keys texts))
+    }
+}
+
+; One thing that will happen.
+;
+; The kinds, and why each exists:
+;
+;   create     the file is not there; write it
+;   update     the tool wrote it, nobody has touched it, and it should differ now
+;   unchanged  it is already exactly right -- NOT written, so `git status` stays
+;              clean and re-running setup is a no-op
+;   merge      a structured or managed file: the tool's parts changed, the rest
+;              was preserved
+;   keep       it exists and is not the tool's to write. A seed the author now
+;              owns, or a generated file they have edited
+;   remove     the tool wrote it, the configuration no longer wants it, and it is
+;              still byte-identical to what was written
+;   orphan     the same, but edited -- so it stays, and is reported
+;   install    a dependency the project needs
+;   run        a command to run when the writing is done
+class FileAction {
+
+    def kind:string ""
+    def path:string ""
+    def contents:string ""
+    def note:string ""
+    def ownership:string ""
+    def profile:string "core"
+
+    Constructor () {
+    }
+
+    sfn of:FileAction (kind:string path:string) {
+        def a (new FileAction())
+        a.kind = kind
+        a.path = path
+        return a
+    }
+
+    ; Whether performing this action writes to the path.
+    fn writesFile:boolean () {
+        if (kind == "create") {
+            return true
+        }
+        if (kind == "update") {
+            return true
+        }
+        if (kind == "merge") {
+            return true
+        }
+        return false
+    }
+
+    fn asLine:string () {
+        def out:string (StarterText.padRight(kind 10))
+        out = out + (StarterText.padRight(path 34))
+        if ((strlen note) > 0) {
+            out = out + " " + note
+        }
+        return (trim_right out)
+    }
+}
+
+class FilePlan {
+
+    def actions:[FileAction]
+    def problems:[StarterProblem]
+
+    ; The manifest to write when this plan is applied. It is computed here rather
+    ; than by the host, so that a `plan` and the `apply` that follows it cannot
+    ; disagree about what the tool will claim ownership of.
+    def manifest:StarterManifest (new StarterManifest())
+
+    Constructor () {
+    }
+
+    fn add:void (action:FileAction) {
+        push actions action
+    }
+
+    fn addProblem:void (problem:StarterProblem) {
+        push problems problem
+    }
+
+    fn hasErrors:boolean () {
+        for problems p:StarterProblem i {
+            if (p.isError()) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn countOf:int (kind:string) {
+        def n:int 0
+        for actions a:FileAction i {
+            if (a.kind == kind) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    fn writeCount:int () {
+        def n:int 0
+        for actions a:FileAction i {
+            if (a.writesFile()) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    ; True when applying this plan changes nothing on disk. This is the property
+    ; the second `apply` in a row must have, and the one the test asserts.
+    fn isNoOp:boolean () {
+        for actions a:FileAction i {
+            if (a.writesFile()) {
+                return false
+            }
+            if (a.kind == "remove") {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn actionsOfKind:[FileAction] (kind:string) {
+        def out:[FileAction]
+        for actions a:FileAction i {
+            if (a.kind == kind) {
+                push out a
+            }
+        }
+        return out
+    }
+
+    ; The plan as text: one line per action. This is what `npm run plan` prints
+    ; and what the golden tests compare against, so its shape is a contract.
+    fn asText:string () {
+        def out:string ""
+        for actions a:FileAction i {
+            out = out + (a.asLine()) + "\n"
+        }
+        return out
+    }
+
+    ; Problems are a separate rendering, not appended to the action list. A caller
+    ; that prints both would otherwise print the problems twice, and a golden test
+    ; that wants to assert only the actions would have to strip them.
+    fn problemsText:string () {
+        def out:string ""
+        for problems p:StarterProblem i {
+            out = out + (StarterText.padRight(p.severity 10)) + (p.asLine()) + "\n"
+        }
+        return out
+    }
+
+    ; Apply this plan to a snapshot and answer the snapshot that results.
+    ;
+    ; This is the SAME decision list the host performs against a real filesystem,
+    ; performed against a map instead. It is what makes the properties that matter
+    ; testable without a disk:
+    ;
+    ;   * applying twice changes nothing the second time
+    ;   * turning a surface off removes its files and nothing else
+    ;   * a file the author edited survives
+    ;
+    ; The host's apply is a loop over the same actions doing real writes; if the
+    ; two ever disagree, this is the one that is right, because this is the one
+    ; with tests.
+    fn applyToState:DiskState (disk:DiskState) {
+        def next (new DiskState())
+        def paths:[string] (keys disk.texts)
+        for paths p:string i {
+            next.put(p (disk.textOf(p)))
+        }
+        for actions a:FileAction i {
+            if (a.writesFile()) {
+                next.put(a.path a.contents)
+                continue
+            }
+            if (a.kind == "remove") {
+                next.dropFile(a.path)
+            }
+        }
+        next.manifest = (manifest.normalized())
+        return next
+    }
+
+    ; The plan as data, for `plan --json`.
+    ;
+    ; It is the SAME value the text form renders, not a separate description of
+    ; it, so an agent that reads this and then runs `apply` is reading what will
+    ; happen. `contents` is deliberately left out: a plan is a decision list, and
+    ; a caller that wants the bytes can read the file after applying.
+    fn asJson:JsonValue () {
+        def root:JsonValue (JsonValue.newObject())
+        root.putKey("schema" (JsonValue.fromInt(1)))
+        root.putKey("summary" (JsonValue.fromText((this.summary()))))
+        root.putKey("noop" (JsonValue.fromBool((this.isNoOp()))))
+
+        def list:JsonValue (JsonValue.newArray())
+        for actions a:FileAction i {
+            def entry:JsonValue (JsonValue.newObject())
+            entry.putKey("action" (JsonValue.fromText(a.kind)))
+            entry.putKey("path" (JsonValue.fromText(a.path)))
+            entry.putKey("writes" (JsonValue.fromBool((a.writesFile()))))
+            if ((strlen a.ownership) > 0) {
+                entry.putKey("ownership" (JsonValue.fromText(a.ownership)))
+            }
+            entry.putKey("profile" (JsonValue.fromText(a.profile)))
+            if ((strlen a.note) > 0) {
+                entry.putKey("note" (JsonValue.fromText(a.note)))
+            }
+            list.addItem(entry)
+        }
+        root.putKey("actions" list)
+
+        def problemList:JsonValue (JsonValue.newArray())
+        for problems p:StarterProblem i {
+            def entry:JsonValue (JsonValue.newObject())
+            entry.putKey("severity" (JsonValue.fromText(p.severity)))
+            entry.putKey("path" (JsonValue.fromText(p.path)))
+            entry.putKey("message" (JsonValue.fromText(p.message)))
+            problemList.addItem(entry)
+        }
+        root.putKey("problems" problemList)
+        root.putKey("ok" (JsonValue.fromBool(((this.hasErrors()) == false))))
+        return root
+    }
+
+    ; The human summary under the listing.
+    fn summary:string () {
+        def parts:[string]
+        def created:int (this.countOf("create"))
+        def updated:int ((this.countOf("update")) + (this.countOf("merge")))
+        def unchanged:int (this.countOf("unchanged"))
+        def kept:int (this.countOf("keep"))
+        def removed:int (this.countOf("remove"))
+        def orphaned:int (this.countOf("orphan"))
+        if (created > 0) {
+            push parts ((to_string created) + " to create")
+        }
+        if (updated > 0) {
+            push parts ((to_string updated) + " to update")
+        }
+        if (removed > 0) {
+            push parts ((to_string removed) + " to remove")
+        }
+        if (unchanged > 0) {
+            push parts ((to_string unchanged) + " already correct")
+        }
+        if (kept > 0) {
+            push parts ((to_string kept) + " left alone")
+        }
+        if (orphaned > 0) {
+            push parts ((to_string orphaned) + " orphaned")
+        }
+        if ((array_length parts) == 0) {
+            return "nothing to do"
+        }
+        return (StarterText.joinWith(parts ", "))
+    }
+}

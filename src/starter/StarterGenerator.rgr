@@ -1,0 +1,318 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterGenerator -- `ProjectPlan` + `DiskState` -> `FilePlan`.
+;
+; Every decision about what happens to a file is made here, once, for all three
+; ownerships, and none of it touches a filesystem. The rules, in the order they
+; are applied to one path:
+;
+;   A GENERATED file (build scripts, host shells, CI workflow):
+;     not on disk                          -> create
+;     on disk, fingerprint matches, same   -> unchanged   (nothing is written)
+;     on disk, fingerprint matches, differs-> update
+;     on disk, fingerprint does NOT match  -> keep, and say so. The author has
+;                                             edited a file the tool wrote, and
+;                                             the tool does not win that argument
+;     on disk, never recorded              -> keep, and say so. Something else
+;                                             put it there
+;
+;   A SEED (src/Main.rgr, a first test): written once, and the author's from then
+;   on. It is never updated, because a starting point that keeps being restored
+;   is not a starting point.
+;
+;   A STRUCTURED file (package.json, ranger.json): parsed and merged, always.
+;   There is no overwrite path, so there is no edit to detect.
+;
+;   A MANAGED file (README.md, AGENTS.md, CLAUDE.md): the regions between markers
+;   are written; everything else is preserved.
+;
+; Then the removal pass: a path the manifest records, that the configuration no
+; longer asks for. Untouched, it is removed; edited, it is orphaned and reported.
+; Only GENERATED files are ever removed -- nothing deletes somebody's
+; `package.json` because a surface was switched off.
+
+Import "StarterPlan.rgr"
+Import "StarterFilePlan.rgr"
+Import "StarterManifest.rgr"
+Import "StarterMarkdown.rgr"
+Import "StarterJsonMerge.rgr"
+Import "StarterHash.rgr"
+
+class StarterGenerator {
+
+    Constructor () {
+    }
+
+    sfn plan:FilePlan (project:ProjectPlan disk:DiskState) {
+        def out (new FilePlan())
+        for project.problems p:StarterProblem i {
+            out.addProblem(p)
+        }
+
+        def planned:[PlanFile] (project.filesByPath())
+        for planned f:PlanFile i {
+            switch f.ownership {
+                case "structured" {
+                    StarterGenerator.planStructured(f project disk out)
+                }
+                case "managed" {
+                    StarterGenerator.planManaged(f project disk out)
+                }
+                default {
+                    StarterGenerator.planGenerated(f disk out)
+                }
+            }
+        }
+
+        StarterGenerator.planRemovals(project disk out)
+        StarterGenerator.planDependencies(project out)
+        StarterGenerator.planCommands(project out)
+        return out
+    }
+
+    ; --- generated and seed ---------------------------------------------------
+
+    sfn planGenerated:void (f:PlanFile disk:DiskState out:FilePlan) {
+        def exists:boolean (disk.hasFile(f.path))
+        if (exists == false) {
+            def create:FileAction (FileAction.of("create" f.path))
+            create.contents = f.contents
+            create.ownership = f.ownership
+            create.profile = f.profile
+            if f.isSeed {
+                create.note = "a starting point; yours once it is written"
+            }
+            out.add(create)
+            out.manifest.recordFile(f.path f.contents f.profile f.ownership)
+            return
+        }
+
+        def onDisk:string (disk.textOf(f.path))
+
+        if f.isSeed {
+            ; A seed that exists is the author's program now. It stays recorded so
+            ; that the tool knows it put it there, but its fingerprint is the
+            ; ORIGINAL one -- re-recording the edited text would quietly make the
+            ; tool the owner of the author's code.
+            def keepSeed:FileAction (FileAction.of("keep" f.path))
+            keepSeed.ownership = f.ownership
+            keepSeed.profile = f.profile
+            keepSeed.note = "a starting point that already exists"
+            out.add(keepSeed)
+            StarterGenerator.carryRecord(f disk out)
+            return
+        }
+
+        if (disk.manifest.knows(f.path)) {
+            if (disk.manifest.isUntouched(f.path onDisk)) {
+                if (onDisk == f.contents) {
+                    def same:FileAction (FileAction.of("unchanged" f.path))
+                    same.ownership = f.ownership
+                    same.profile = f.profile
+                    out.add(same)
+                    out.manifest.recordFile(f.path f.contents f.profile f.ownership)
+                    return
+                }
+                def update:FileAction (FileAction.of("update" f.path))
+                update.contents = f.contents
+                update.ownership = f.ownership
+                update.profile = f.profile
+                out.add(update)
+                out.manifest.recordFile(f.path f.contents f.profile f.ownership)
+                return
+            }
+            ; Edited since it was generated. The tool keeps its hands off and
+            ; says what it would have written, which is the only useful thing it
+            ; can do here.
+            def edited:FileAction (FileAction.of("keep" f.path))
+            edited.ownership = f.ownership
+            edited.profile = f.profile
+            edited.note = "edited since it was generated -- not overwritten"
+            out.add(edited)
+            out.addProblem((StarterProblem.warn(f.path "this file was generated and has been edited. Delete it and re-apply to take the tool's version, or leave it as it is.")))
+            StarterGenerator.carryRecord(f disk out)
+            return
+        }
+
+        ; On disk and never recorded: an existing project, or a file somebody
+        ; else's tool wrote. Not ours to take.
+        def foreign:FileAction (FileAction.of("keep" f.path))
+        foreign.ownership = f.ownership
+        foreign.profile = f.profile
+        foreign.note = "already exists and was not written by this tool"
+        out.add(foreign)
+        out.addProblem((StarterProblem.warn(f.path "this file already exists and this tool did not write it, so it is left as it is.")))
+    }
+
+    ; Keep the manifest entry a previous run made, unchanged. Used where the tool
+    ; declines to write: forgetting the path would make the next run treat the
+    ; file as foreign, and re-recording it would claim the author's edit.
+    sfn carryRecord:void (f:PlanFile disk:DiskState out:FilePlan) {
+        if ((disk.manifest.knows(f.path)) == false) {
+            return
+        }
+        def files:JsonValue (out.manifest.files())
+        def previous:JsonValue (disk.manifest.files())
+        def entry@(optional):JsonValue (previous.getKey(f.path))
+        if (null? entry) {
+            return
+        }
+        files.putKey(f.path (unwrap entry))
+    }
+
+    ; --- structured -----------------------------------------------------------
+
+    sfn planStructured:void (f:PlanFile project:ProjectPlan disk:DiskState out:FilePlan) {
+        def parser (new StarterJson())
+        def desired:JsonValue (parser.parse(f.contents))
+        if ((parser.ok()) == false) {
+            ; The tool's own desired content did not parse. That is a defect in a
+            ; profile, not something the author can fix, so it is an error.
+            out.addProblem((StarterProblem.about(f.path ("this tool produced invalid JSON for its own use: " + parser.problem))))
+            return
+        }
+        def owned:JsonValue (StarterJsonMerge.ownedKeys(desired))
+
+        if ((disk.hasFile(f.path)) == false) {
+            def create:FileAction (FileAction.of("create" f.path))
+            create.contents = (desired.asText())
+            create.ownership = f.ownership
+            create.profile = f.profile
+            out.add(create)
+            out.manifest.recordFile(f.path create.contents f.profile f.ownership)
+            out.manifest.setOwned(f.path owned)
+            return
+        }
+
+        def existingText:string (disk.textOf(f.path))
+        def ownedBefore:JsonValue (disk.manifest.ownedOf(f.path))
+        def merged:JsonMergeResult (StarterJsonMerge.mergeText(existingText desired ownedBefore))
+        if ((merged.ok()) == false) {
+            out.addProblem((StarterProblem.about(f.path merged.problem)))
+            return
+        }
+        if (merged.text == existingText) {
+            def same:FileAction (FileAction.of("unchanged" f.path))
+            same.ownership = f.ownership
+            same.profile = f.profile
+            out.add(same)
+            out.manifest.recordFile(f.path existingText f.profile f.ownership)
+            out.manifest.setOwned(f.path owned)
+            return
+        }
+        def action:FileAction (FileAction.of("merge" f.path))
+        action.contents = merged.text
+        action.ownership = f.ownership
+        action.profile = f.profile
+        action.note = (merged.summary())
+        out.add(action)
+        out.manifest.recordFile(f.path merged.text f.profile f.ownership)
+        out.manifest.setOwned(f.path owned)
+    }
+
+    ; --- managed --------------------------------------------------------------
+
+    sfn planManaged:void (f:PlanFile project:ProjectPlan disk:DiskState out:FilePlan) {
+        def sections:[PlanSection] (project.sectionsOf(f.path))
+        def ids:[string]
+        for sections s:PlanSection i {
+            push ids s.id
+        }
+
+        if ((disk.hasFile(f.path)) == false) {
+            def create:FileAction (FileAction.of("create" f.path))
+            create.contents = f.contents
+            create.ownership = f.ownership
+            create.profile = f.profile
+            out.add(create)
+            out.manifest.recordFile(f.path f.contents f.profile f.ownership)
+            out.manifest.setSections(f.path ids)
+            return
+        }
+
+        def existingText:string (disk.textOf(f.path))
+        def merged:MarkdownMerge (StarterMarkdown.merge(existingText sections))
+        if ((merged.ok()) == false) {
+            out.addProblem((StarterProblem.about(f.path merged.problem)))
+            return
+        }
+        if (merged.text == existingText) {
+            def same:FileAction (FileAction.of("unchanged" f.path))
+            same.ownership = f.ownership
+            same.profile = f.profile
+            out.add(same)
+            out.manifest.recordFile(f.path existingText f.profile f.ownership)
+            out.manifest.setSections(f.path ids)
+            return
+        }
+        def action:FileAction (FileAction.of("merge" f.path))
+        action.contents = merged.text
+        action.ownership = f.ownership
+        action.profile = f.profile
+        action.note = (merged.summary())
+        out.add(action)
+        out.manifest.recordFile(f.path merged.text f.profile f.ownership)
+        out.manifest.setSections(f.path ids)
+    }
+
+    ; --- removals -------------------------------------------------------------
+
+    sfn planRemovals:void (project:ProjectPlan disk:DiskState out:FilePlan) {
+        def recorded:[string] (disk.manifest.recordedPaths())
+        for recorded path:string i {
+            def stillWanted@(optional):PlanFile (project.fileAt(path))
+            if ((null? stillWanted) == false) {
+                continue
+            }
+            ; Only a generated file is ever removed. A structured or managed file
+            ; the configuration stopped mentioning is left where it is: nothing
+            ; deletes somebody's package.json or README.
+            if ((disk.manifest.ownershipOf(path)) != "generated") {
+                continue
+            }
+            if ((disk.hasFile(path)) == false) {
+                ; Already gone. Dropping it from the manifest is the whole action.
+                continue
+            }
+            def onDisk:string (disk.textOf(path))
+            if (disk.manifest.isUntouched(path onDisk)) {
+                def remove:FileAction (FileAction.of("remove" path))
+                remove.ownership = "generated"
+                remove.profile = (disk.manifest.profileOf(path))
+                remove.note = "no longer part of this configuration"
+                out.add(remove)
+                continue
+            }
+            def orphan:FileAction (FileAction.of("orphan" path))
+            orphan.ownership = "generated"
+            orphan.profile = (disk.manifest.profileOf(path))
+            orphan.note = "no longer configured, but edited -- left in place"
+            out.add(orphan)
+            out.addProblem((StarterProblem.warn(path "this file is no longer part of the configuration, and it has been edited, so it was not removed. Delete it by hand when you are done with it.")))
+        }
+    }
+
+    ; --- dependencies and commands --------------------------------------------
+
+    sfn planDependencies:void (project:ProjectPlan out:FilePlan) {
+        def deps:[PlanDependency] (project.dependenciesByName())
+        for deps d:PlanDependency i {
+            def action:FileAction (FileAction.of("install" d.name))
+            action.profile = d.profile
+            if d.isDev {
+                action.note = d.version + " (dev)"
+            } {
+                action.note = d.version
+            }
+            out.add(action)
+        }
+    }
+
+    sfn planCommands:void (project:ProjectPlan out:FilePlan) {
+        for project.commands c:PlanCommand i {
+            def action:FileAction (FileAction.of("run" (c.commandLine())))
+            action.note = c.why
+            out.add(action)
+        }
+    }
+}

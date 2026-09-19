@@ -1,0 +1,95 @@
+[
+  {
+    "name": "20-mobile-name",
+    "keys": "n o r t h w i n d",
+    "expect": [
+      "What is the project called?",
+      "northwind"
+    ]
+  },
+  {
+    "name": "21-mobile-surfaces",
+    "keys": "return return",
+    "expect": [
+      "Where should it run?"
+    ]
+  },
+  {
+    "name": "22-mobile-picked",
+    "keys": "down down down down space down space",
+    "expect": [
+      "[x] Android",
+      "[x] iOS"
+    ]
+  },
+  {
+    "name": "23-android-targets",
+    "keys": "return",
+    "expect": [
+      "Android: which languages?",
+      "[x] Kotlin"
+    ]
+  },
+  {
+    "name": "24-android-devices",
+    "keys": "return",
+    "expect": [
+      "Android: which devices?",
+      "[x] Phone",
+      "[ ] Wear"
+    ]
+  },
+  {
+    "name": "25-android-devices-2",
+    "keys": "down space",
+    "expect": [
+      "[x] Phone",
+      "[x] Tablet"
+    ]
+  },
+  {
+    "name": "26-ios-targets",
+    "keys": "return",
+    "expect": [
+      "iOS: which languages?",
+      "[x] Swift 6"
+    ]
+  },
+  {
+    "name": "27-ios-devices",
+    "keys": "return",
+    "expect": [
+      "iOS: which devices?",
+      "[x] iPhone",
+      "[ ] iPad"
+    ]
+  },
+  {
+    "name": "28-ios-devices-2",
+    "keys": "down space",
+    "expect": [
+      "[x] iPhone",
+      "[x] iPad"
+    ]
+  },
+  {
+    "name": "29-mobile-review",
+    "keys": "return return return return",
+    "expect": [
+      "Ready?",
+      "Android",
+      "iOS",
+      "phone, tablet"
+    ]
+  },
+  {
+    "name": "30-mobile-generated",
+    "keys": "return",
+    "expect": [
+      "wrote ranger.project.json",
+      "src/Shared.rgr",
+      "platforms/ios/App.swift",
+      "MainActivity.kt"
+    ]
+  }
+]

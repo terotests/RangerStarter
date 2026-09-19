@@ -1,0 +1,204 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterWizardView -- the wizard's screen, as lines of text.
+;
+; Separate from the state machine so that changing how a screen LOOKS cannot
+; change what a key DOES, and so that the screenshots in the documentation are a
+; function of the wizard's state rather than of a terminal that happened to be
+; that size on the day.
+;
+; It answers `[string]`. The host clears the screen and prints them. Nothing here
+; writes anything.
+
+Import "StarterWizard.rgr"
+Import "StarterText.rgr"
+
+class StarterWizardView {
+
+    ; Wide enough for a hint beside a label, narrow enough for a split pane.
+    def width:int 72
+
+    Constructor () {
+    }
+
+    sfn rule:string (width:int) {
+        return (StarterText.repeated("─" width))
+    }
+
+    fn render:[string] (w:StarterWizard) {
+        def out:[string]
+        def q:WizardQuestion (w.current())
+
+        push out ""
+        def step:string ((to_string (w.stepNumber())) + " of " + (to_string (w.stepCount())))
+        def title:string "  Ranger project setup"
+        def pad:int ((width + 2) - (strlen title) - (strlen step))
+        if (pad < 1) {
+            pad = 1
+        }
+        push out (title + (StarterText.repeated(" " pad)) + step)
+        push out ("  " + (StarterWizardView.rule(width)))
+        push out ""
+        push out ("  " + q.title)
+
+        if ((strlen q.help) > 0) {
+            push out ""
+            for (StarterText.wrapped(q.help (width - 2))) line:string i {
+                push out ("  " + line)
+            }
+        }
+        push out ""
+
+        switch q.kind {
+            case "text" {
+                for (this.textLines(q)) line:string i {
+                    push out line
+                }
+            }
+            case "review" {
+                for (this.reviewLines(w)) line:string i {
+                    push out line
+                }
+            }
+            default {
+                for (this.optionLines(q)) line:string i {
+                    push out line
+                }
+            }
+        }
+
+        if ((strlen q.problem) > 0) {
+            push out ""
+            push out ("  ×  " + q.problem)
+        }
+
+        push out ""
+        push out ("  " + (StarterWizardView.rule(width)))
+        push out ("  " + (this.keyHints(q w)))
+        push out ""
+        return out
+    }
+
+    fn textLines:[string] (q:WizardQuestion) {
+        def out:[string]
+        def shown:string q.text
+        if ((strlen shown) == 0) {
+            ; The placeholder is shown in brackets so it cannot be mistaken for
+            ; something already typed.
+            push out ("    ▸ ▁")
+            push out ("        for example: " + q.placeholder)
+            return out
+        }
+        push out ("    ▸ " + shown + "▁")
+        return out
+    }
+
+    fn optionLines:[string] (q:WizardQuestion) {
+        def out:[string]
+        def labelWidth:int 24
+        def hintWidth:int (width - labelWidth - 10)
+        def i:int 0
+        def cnt:int (array_length q.options)
+        while (i < cnt) {
+            def o:WizardOption (itemAt q.options i)
+            def cursor:string "  "
+            if (i == q.cursor) {
+                cursor = "▸ "
+            }
+            def box:string "( )"
+            if (q.kind == "multi") {
+                box = "[ ]"
+                if (o.picked) {
+                    box = "[x]"
+                }
+            } {
+                if (o.picked) {
+                    box = "(•)"
+                }
+            }
+            if ((o.available) == false) {
+                ; Not selectable, and shown as such: no box to tick.
+                box = " – "
+            }
+            def line:string ("  " + cursor + box + " " + (StarterText.padRight(o.label labelWidth)))
+            if ((strlen o.hint) > 0) {
+                line = line + (StarterText.clip(o.hint hintWidth))
+            }
+            push out (trim_right line)
+            i = i + 1
+        }
+        return out
+    }
+
+    fn reviewLines:[string] (w:StarterWizard) {
+        def out:[string]
+        def cfg:StarterConfig (w.configOf())
+        def keyWidth:int 15
+        push out ("    " + (StarterText.padRight("project" keyWidth)) + (cfg.projectName()))
+        push out ("    " + (StarterText.padRight("kind" keyWidth)) + (cfg.projectKind()))
+        def surfaces:[string] (cfg.enabledSurfaceIds())
+        for surfaces sid:string i {
+            def label:string (StarterConfig.surfaceTitle(sid))
+            def ts:[string] (w.targets.inTableOrder((cfg.targetsOf(sid))))
+            def said:string (StarterText.joinWith(ts ", "))
+            ; The devices belong on this line too. They are half the answer for a
+            ; mobile surface -- a watch build and a phone build differ only here
+            ; -- and a review screen that does not show them cannot be reviewed.
+            def devices:[string] (cfg.devicesOf(sid))
+            if ((array_length devices) > 0) {
+                said = (said + " -- " + (StarterText.joinWith(devices ", ")))
+            }
+            push out ("    " + (StarterText.padRight(label keyWidth)) + said)
+        }
+        def docs:string "no"
+        if (cfg.docsEnabled()) {
+            docs = "yes"
+            if (cfg.docsStrict()) {
+                docs = "yes, enforced (-apistrict)"
+            }
+        }
+        push out ("    " + (StarterText.padRight("docs" keyWidth)) + docs)
+        def agents:string "none"
+        if (cfg.wantsAgentsMd()) {
+            agents = "AGENTS.md"
+            if (cfg.wantsClaudeMd()) {
+                agents = "AGENTS.md, CLAUDE.md"
+            }
+        }
+        push out ("    " + (StarterText.padRight("agents" keyWidth)) + agents)
+        def ci:string "no"
+        if (cfg.wantsGithubCi()) {
+            ci = "GitHub Actions"
+        }
+        push out ("    " + (StarterText.padRight("ci" keyWidth)) + ci)
+        return out
+    }
+
+    fn keyHints:string (q:WizardQuestion w:StarterWizard) {
+        def parts:[string]
+        switch q.kind {
+            case "text" {
+                push parts "type a name"
+                push parts "⌫ delete"
+                push parts "⏎ continue"
+            }
+            case "review" {
+                push parts "⏎ generate"
+            }
+            case "multi" {
+                push parts "↑↓ move"
+                push parts "space toggle"
+                push parts "⏎ continue"
+            }
+            default {
+                push parts "↑↓ move"
+                push parts "⏎ choose"
+            }
+        }
+        if ((w.stepNumber()) > 1) {
+            push parts "← back"
+        }
+        push parts "esc cancel"
+        return (StarterText.joinWith(parts "    "))
+    }
+}

@@ -1,0 +1,1933 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterTest -- the starter's own test. `npm run starter:test`.
+;
+; Everything here runs without a filesystem, a terminal or a process, because
+; everything it tests is pure. That is the point of the architecture and this is
+; where the claim is cashed: a configuration goes in, a plan comes out, and the
+; plan is compared against text.
+;
+; Run it on more than one target when changing anything in the core -- the core
+; is meant to compile to all fourteen, and the two targets that disagree first
+; are Python (prints 7.0) and Go (strict number parsing):
+;
+;   scripts/rgr run src/starter/StarterTest.rgr
+;   scripts/rgr run src/starter/StarterTest.rgr -l=python
+;   scripts/rgr run src/starter/StarterTest.rgr -l=go
+
+Import "StarterConfig.rgr"
+Import "StarterTargets.rgr"
+Import "StarterText.rgr"
+Import "StarterPlanner.rgr"
+Import "StarterGenerator.rgr"
+Import "StarterDoctor.rgr"
+Import "StarterWizardView.rgr"
+Import "StarterDescribe.rgr"
+Import "StarterAssets.rgr"
+
+class StarterCheck {
+
+    def failures:int 0
+    def checks:int 0
+    def verbose:boolean false
+
+    Constructor () {
+    }
+
+    fn eqStr:void (label:string got:string want:string) {
+        checks = checks + 1
+        if (got == want) {
+            if verbose {
+                print ("  ok   " + label)
+            }
+            return
+        }
+        failures = failures + 1
+        print ("  FAIL " + label)
+        print ("    got:  " + got)
+        print ("    want: " + want)
+    }
+
+    fn eqInt:void (label:string got:int want:int) {
+        this.eqStr(label (to_string got) (to_string want))
+    }
+
+    fn isTrue:void (label:string got:boolean) {
+        def gotText:string "false"
+        if got {
+            gotText = "true"
+        }
+        this.eqStr(label gotText "true")
+    }
+
+    fn isFalse:void (label:string got:boolean) {
+        def gotText:string "false"
+        if got {
+            gotText = "true"
+        }
+        this.eqStr(label gotText "false")
+    }
+
+    ; A list is compared against a comma-separated spelling of it. Ranger's
+    ; typed array literal needs a group -- `([] _:string ( "a" "b" ))` -- and a
+    ; test reads better with the expectation written as text anyway.
+    fn eqList:void (label:string got:[string] want:string) {
+        this.eqStr(label (StarterText.joinWith(got ",")) want)
+    }
+
+    fn report:void (name:string) {
+        if (failures > 0) {
+            print ((((to_string failures) + " of ") + (to_string checks)) + " checks failed in " + name)
+            exit 1
+        }
+        print ((to_string checks) + " checks passed in " + name)
+    }
+}
+
+class StarterTest {
+
+    Constructor () {
+    }
+
+    ; --- JSON -----------------------------------------------------------------
+
+    sfn testJsonRoundTrip:void (t:StarterCheck) {
+        ; The keys are deliberately not alphabetical: what comes back out must be
+        ; what went in, because that is what keeps a merged package.json from
+        ; showing as a whole-file diff.
+        def src:string "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"scripts\": {\n    \"test\": \"node t.js\"\n  },\n  \"keywords\": [],\n  \"weird\": null,\n  \"count\": 3\n}\n"
+        def p (new StarterJson())
+        def v:JsonValue (p.parse(src))
+        t.isTrue("a package.json parses" (p.ok()))
+        t.eqStr("and writes back byte-identical" (v.asText()) src)
+    }
+
+    sfn testUnknownKeysSurvive:void (t:StarterCheck) {
+        def src:string "{\"known\":1,\"somethingNobodyHasHeardOf\":{\"deep\":[1,2]}}"
+        def p (new StarterJson())
+        def v:JsonValue (p.parse(src))
+        t.isTrue("parses" (p.ok()))
+        v.putKey("known" (JsonValue.fromInt(2)))
+        def again:string (v.asText())
+        def p2 (new StarterJson())
+        def v2:JsonValue (p2.parse(again))
+        t.eqInt("the changed key changed" (v2.getInt("known" 0)) 2)
+        def deep:JsonValue (v2.getObject("somethingNobodyHasHeardOf"))
+        def arr:JsonValue (deep.getArray("deep"))
+        t.eqInt("and the unknown subtree survived" (arr.itemCount()) 2)
+        t.eqStr("in place" (StarterText.joinWith(v2.order ",")) (StarterText.joinWith(v.order ",")))
+    }
+
+    sfn testJsonEscapes:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def v:JsonValue (p.parse("{\"s\":\"a\\\"b\\\\c\\nd\\tE\\u00e4\"}"))
+        t.isTrue("escapes parse" (p.ok()))
+        def got:string (v.getText("s" ""))
+        t.eqInt("the decoded string has the right length" (strlen got) 10)
+        ; Re-quoting must produce something that parses back to the same value:
+        ; the round trip is the property, not one particular spelling.
+        def p2 (new StarterJson())
+        def v2:JsonValue (p2.parse((v.asText())))
+        t.isTrue("and re-parse" (p2.ok()))
+        t.eqStr("round-trips" (v2.getText("s" "")) got)
+    }
+
+    sfn testJsonErrors:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def ignored:JsonValue (p.parse("{\"a\":1,}"))
+        t.isFalse("a trailing comma is rejected" (p.ok()))
+        t.eqStr("and named" (substring p.problem 0 28) "trailing comma in an object ")
+
+        def p2 (new StarterJson())
+        def ignored2:JsonValue (p2.parse("{\"a\":1"))
+        t.isFalse("an unclosed object is rejected" (p2.ok()))
+
+        def p3 (new StarterJson())
+        def ignored3:JsonValue (p3.parse("[1,2] junk"))
+        t.isFalse("trailing junk is rejected" (p3.ok()))
+    }
+
+    sfn testJsonNumbers:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def v:JsonValue (p.parse("{\"i\":42,\"neg\":-7,\"d\":1.5}"))
+        t.isTrue("numbers parse" (p.ok()))
+        t.eqInt("an integer reads as one" (v.getInt("i" 0)) 42)
+        t.eqInt("a negative integer too" (v.getInt("neg" 0)) -7)
+        ; An integer must not print as 7.0 on Python, or the same configuration
+        ; produces two different files depending on the target that wrote it.
+        def ints:JsonValue (JsonValue.newObject())
+        ints.putKey("schema" (JsonValue.fromInt(1)))
+        t.eqStr("an integer writes without a decimal point" (ints.asText()) "{\n  \"schema\": 1\n}\n")
+    }
+
+    ; --- the configuration ----------------------------------------------------
+
+    sfn testDefaults:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        t.eqInt("the schema version is written" (cfg.schemaVersion()) 1)
+        t.eqStr("the name" (cfg.projectName()) "northwind")
+        t.eqStr("the kind" (cfg.projectKind()) "application")
+        t.eqStr("the license" (cfg.licenseId()) "MIT")
+        t.eqInt("nothing is enabled yet" (array_length (cfg.enabledSurfaceIds())) 0)
+        ; Every surface is present and off, so the file is a menu.
+        def ids:[string] (StarterConfig.surfaceIds())
+        def surfaces:JsonValue (cfg.surfaces())
+        t.eqStr("every surface is in the file, in canonical order" (StarterText.joinWith(surfaces.order ",")) (StarterText.joinWith(ids ",")))
+    }
+
+    sfn testReverseDomain:void (t:StarterCheck) {
+        t.eqStr("a plain name" (StarterConfig.reverseDomain("northwind")) "com.example.northwind")
+        t.eqStr("punctuation is dropped" (StarterConfig.reverseDomain("my-app_2")) "com.example.myapp2")
+        t.eqStr("capitals are folded" (StarterConfig.reverseDomain("MyApp")) "com.example.myapp")
+        t.eqStr("a leading digit gets a letter" (StarterConfig.reverseDomain("2fast")) "com.example.a2fast")
+        t.eqStr("an empty name still answers something legal" (StarterConfig.reverseDomain("---")) "com.example.app")
+    }
+
+    sfn testSurfaceReads:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("cli" true)
+        def cliTargets:[string]
+        push cliTargets "es6"
+        push cliTargets "go"
+        cfg.setTargets("cli" cliTargets)
+        cfg.setEnabled("android" true)
+        def androidTargets:[string]
+        push androidTargets "kotlin"
+        cfg.setTargets("android" androidTargets)
+        def devices:[string]
+        push devices "phone"
+        push devices "tablet"
+        cfg.setDevices("android" devices)
+
+        t.eqList("enabled surfaces come back in canonical order" (cfg.enabledSurfaceIds()) "cli,android")
+        t.eqList("a multi-target surface" (cfg.targetsOf("cli")) "es6,go")
+        t.eqList("a single-target surface answers a one-element list" (cfg.targetsOf("android")) "kotlin")
+        t.eqList("devices" (cfg.devicesOf("android")) "phone,tablet")
+        t.eqStr("the android package was guessed from the name" (cfg.optionOf("android" "package" "")) "com.example.northwind")
+        t.eqList("every target asked for" (cfg.allTargetIds()) "es6,go,kotlin")
+        t.isFalse("a surface nobody enabled" (cfg.isEnabled("ios")))
+    }
+
+    sfn testConfigRoundTrip:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        cfg.setDocs(true true false)
+        def text:string (cfg.asText())
+        def load:StarterConfigLoad (StarterConfig.load(text))
+        t.isTrue("a written configuration loads" load.ok)
+        def again:StarterConfig load.config
+        t.eqStr("and writes identically" (again.asText()) text)
+        t.isTrue("with its answers" (again.isEnabled("web")))
+        t.isTrue("and its documentation setting" (again.docsApi()))
+    }
+
+    sfn testConfigLoadErrors:void (t:StarterCheck) {
+        def load:StarterConfigLoad (StarterConfig.load("{\"name\":\"x\",}"))
+        t.isFalse("a malformed file does not load" load.ok)
+        t.isTrue("and says why" ((strlen load.problem) > 0))
+
+        def load2:StarterConfigLoad (StarterConfig.load("[]"))
+        t.isFalse("a JSON array is not a project file" load2.ok)
+
+        ; A file missing everything still loads: validation reports what is
+        ; missing, so the wizard can open a half-written file and fix it.
+        def load3:StarterConfigLoad (StarterConfig.load("{}"))
+        t.isTrue("an empty object loads" load3.ok)
+        def empty:StarterConfig load3.config
+        t.eqStr("and reads as unnamed" (empty.projectName()) "")
+    }
+
+    ; --- the target table -----------------------------------------------------
+
+    sfn testTargets:void (t:StarterCheck) {
+        def ts:StarterTargets (StarterTargets.bundled())
+        t.eqStr("the bundled table says so" ts.source "bundled")
+        t.eqInt("fourteen targets and one variant" (array_length ts.list) 15)
+        t.eqStr("es6 is the reference target" (ts.extensionOf("es6")) "js")
+        t.eqStr("typescript is a variant of es6" (ts.languageFlagOf("typescript")) "es6")
+        t.eqStr("and not a language of its own" (ts.languageFlagOf("go")) "go")
+        t.eqStr("kotlin packages with gradle" (ts.packagingOf("kotlin")) "gradle")
+        t.eqStr("go has no manifest of its own" (ts.packagingOf("go")) "")
+        t.isFalse("a target that does not exist" (ts.isKnown("cobol")))
+
+        ; The order a set of targets is planned in belongs to the table, so two
+        ; authors who picked the same targets get the same project.
+        def picked:[string]
+        push picked "python"
+        push picked "es6"
+        push picked "kotlin"
+        t.eqList("targets sort into table order" (ts.inTableOrder(picked)) "es6,kotlin,python")
+    }
+
+    sfn testTargetsFromCompiler:void (t:StarterCheck) {
+        def p (new StarterJson())
+        def root:JsonValue (p.parse("[{\"id\":\"es6\",\"name\":\"JavaScript\"},{\"id\":\"go\"},{\"id\":\"zig\",\"tier\":\"experimental\"}]"))
+        t.isTrue("the compiler's answer parses" (p.ok()))
+        def ts:StarterTargets (StarterTargets.fromJson(root))
+        t.eqStr("and is authoritative" ts.source "compiler")
+        t.isTrue("a target only the compiler knows about is offered" (ts.isKnown("zig")))
+        t.isFalse("and one it no longer has is not" (ts.isKnown("scala")))
+        t.eqStr("what it did not say is filled in from the bundled table" (ts.extensionOf("go")) "go")
+        t.isTrue("the typescript variant survives, being a flag not a target" (ts.isKnown("typescript")))
+
+        ; An empty or malformed answer must not leave the starter with no targets
+        ; at all -- that would turn a compiler quirk into "this project cannot
+        ; be configured".
+        def p2 (new StarterJson())
+        def notAList:JsonValue (p2.parse("{}"))
+        def fallback:StarterTargets (StarterTargets.fromJson(notAList))
+        t.eqStr("a malformed answer falls back" fallback.source "bundled")
+    }
+
+
+    ; --- the planner and the generator ---------------------------------------
+    ;
+    ; From here down, every test is a configuration going in and a plan coming
+    ; out, with a `DiskState` built in memory. No filesystem is involved, which is
+    ; the property the whole architecture exists to buy.
+
+    sfn bundled:StarterTargets () {
+        return (StarterTargets.bundled())
+    }
+
+    ; The skills a test pretends the tool ships. Two of them, with bodies short
+    ; enough to read, because what is being tested is which ones get installed --
+    ; not what they say.
+    sfn assets:StarterAssets () {
+        def a (new StarterAssets())
+        set a.skills "ranger-lang" "# ranger-lang\n\nThe syntax traps.\n"
+        set a.about "ranger-lang" "The Ranger syntax traps."
+        set a.skills "ranger-build" "# ranger-build\n\nThe build loop.\n"
+        set a.about "ranger-build" "The build loop in a generated project."
+        return a
+    }
+
+    ; A tool that shipped nothing: a clone that was never built.
+    sfn noAssets:StarterAssets () {
+        def a (new StarterAssets())
+        a.problem = "no skills to install"
+        return a
+    }
+
+    sfn cliConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("cli" true)
+        def ts:[string]
+        push ts "es6"
+        push ts "go"
+        cfg.setTargets("cli" ts)
+        cfg.setAgents(true true "auto")
+        cfg.setDocs(true true false)
+        return cfg
+    }
+
+    sfn planFor:FilePlan (cfg:StarterConfig disk:DiskState) {
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        return (StarterGenerator.plan(project disk))
+    }
+
+    sfn projectFor:ProjectPlan (cfg:StarterConfig) {
+        return (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+    }
+
+    ; The golden plan. It is written out in full, deliberately: this is the shape
+    ; of a generated project, and a change to it should be a change somebody chose
+    ; and can read in a diff.
+    sfn testPlanGolden:void (t:StarterCheck) {
+        def disk (new DiskState())
+        def filePlan:FilePlan (StarterTest.planFor((StarterTest.cliConfig()) disk))
+        def want:[string]
+        push want "create    .claude/skills/ranger-build/SKILL.md"
+        push want "create    .claude/skills/ranger-lang/SKILL.md"
+        push want "create    .github/workflows/ci.yml"
+        push want "create    .gitignore"
+        push want "create    AGENTS.md"
+        push want "create    CLAUDE.md"
+        push want "create    README.md"
+        push want "create    package.json"
+        push want "create    ranger.json"
+        push want "create    scripts/rgr.js"
+        push want "create    src/Main.rgr                       a starting point; yours once it is written"
+        push want "create    src/MainTest.rgr                   a starting point; yours once it is written"
+        t.eqStr("the plan for an empty directory" (filePlan.asText()) ((StarterText.joinWith(want "\n")) + "\n"))
+        t.eqStr("and nothing to complain about" (filePlan.problemsText()) "")
+        t.eqStr("summary" (filePlan.summary()) "12 to create")
+        t.isFalse("a plan that creates twelve files is not a no-op" (filePlan.isNoOp()))
+    }
+
+    ; The M2 property: applying twice changes nothing the second time.
+    sfn testIdempotent:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def empty (new DiskState())
+        def first:FilePlan (StarterTest.planFor(cfg empty))
+        def after:DiskState (first.applyToState(empty))
+        def second:FilePlan (StarterTest.planFor(cfg after))
+        t.isTrue("applying a second time writes nothing" (second.isNoOp()))
+        t.eqInt("nothing is created" (second.countOf("create")) 0)
+        t.eqInt("nothing is updated" (second.countOf("update")) 0)
+        t.eqInt("nothing is merged" (second.countOf("merge")) 0)
+        t.eqInt("nothing is removed" (second.countOf("remove")) 0)
+        ; And a third time, because a mechanism that settles after two passes but
+        ; not after one is a mechanism that has not settled.
+        def afterSecond:DiskState (second.applyToState(after))
+        def third:FilePlan (StarterTest.planFor(cfg afterSecond))
+        t.isTrue("and a third time" (third.isNoOp()))
+        t.eqStr("the manifest is stable too" (afterSecond.manifest.asText()) (after.manifest.asText()))
+    }
+
+    ; Turning a surface off removes what it contributed, and only that.
+    sfn testSurfaceRemoval:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("library" true)
+        def libTargets:[string]
+        push libTargets "python"
+        cfg.setTargets("library" libTargets)
+
+        def empty (new DiskState())
+        def withLib:FilePlan (StarterTest.planFor(cfg empty))
+        def onDisk:DiskState (withLib.applyToState(empty))
+        t.isTrue("the library surface wrote its own entry point" (onDisk.hasFile("src/Northwind.rgr")))
+
+        ; The library seed is a seed: it exists now, so the second plan keeps it
+        ; rather than rewriting it. Removal has to work on a file in that state.
+        cfg.setEnabled("library" false)
+        def without:FilePlan (StarterTest.planFor(cfg onDisk))
+        def removals:[FileAction] (without.actionsOfKind("remove"))
+        def removedPaths:[string]
+        for removals a:FileAction i {
+            push removedPaths a.path
+        }
+        t.eqList("its files are removed" (StarterText.sorted(removedPaths)) "src/Northwind.rgr,src/NorthwindTest.rgr")
+
+        def afterRemoval:DiskState (without.applyToState(onDisk))
+        t.isFalse("and are gone" (afterRemoval.hasFile("src/Northwind.rgr")))
+        t.isTrue("while the cli surface keeps its own" (afterRemoval.hasFile("src/Main.rgr")))
+        t.isTrue("and package.json is still there" (afterRemoval.hasFile("package.json")))
+
+        ; The scripts the library surface added are gone from package.json, and the
+        ; ones the CLI surface added are not.
+        def pkg:string (afterRemoval.textOf("package.json"))
+        t.isFalse("its package script is gone" (contains pkg "package:python"))
+        t.isTrue("the cli scripts remain" (contains pkg "\"start\""))
+
+        ; And the round trip is clean: removing a surface leaves the project the
+        ; way it was before the surface was added.
+        def plain:StarterConfig (StarterTest.cliConfig())
+        def fresh (new DiskState())
+        def reference:FilePlan (StarterTest.planFor(plain fresh))
+        def referenceState:DiskState (reference.applyToState(fresh))
+        t.eqStr("package.json matches a project that never had the surface" (afterRemoval.textOf("package.json")) (referenceState.textOf("package.json")))
+        t.eqStr("and so does AGENTS.md" (afterRemoval.textOf("AGENTS.md")) (referenceState.textOf("AGENTS.md")))
+    }
+
+    ; A generated file the author has edited is kept, reported, and not updated.
+    sfn testHandEditedFileIsKept:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def empty (new DiskState())
+        def first:FilePlan (StarterTest.planFor(cfg empty))
+        def onDisk:DiskState (first.applyToState(empty))
+
+        def mine:string ((onDisk.textOf("scripts/rgr.js")) + "\n// my own change\n")
+        onDisk.put("scripts/rgr.js" mine)
+
+        def second:FilePlan (StarterTest.planFor(cfg onDisk))
+        def kept:[FileAction] (second.actionsOfKind("keep"))
+        def keptEdited:boolean false
+        for kept a:FileAction i {
+            if (a.path == "scripts/rgr.js") {
+                keptEdited = true
+                t.eqStr("and says why" a.note "edited since it was generated -- not overwritten")
+            }
+        }
+        t.isTrue("an edited generated file is kept" keptEdited)
+        t.isTrue("and warned about" ((strlen (second.problemsText())) > 0))
+        t.isFalse("a warning is not an error" (second.hasErrors()))
+
+        def after:DiskState (second.applyToState(onDisk))
+        t.eqStr("the edit survives" (after.textOf("scripts/rgr.js")) mine)
+    }
+
+    ; A file that exists and the tool never wrote is not taken over.
+    sfn testForeignFileIsLeftAlone:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def disk (new DiskState())
+        disk.put("scripts/rgr.js" "# somebody else's wrapper\n")
+        def filePlan:FilePlan (StarterTest.planFor(cfg disk))
+        def kept:boolean false
+        for filePlan.actions a:FileAction i {
+            if (a.path == "scripts/rgr.js") {
+                t.eqStr("a pre-existing file is kept" a.kind "keep")
+                t.eqStr("and says so" a.note "already exists and was not written by this tool")
+                kept = true
+            }
+        }
+        t.isTrue("the foreign file was seen" kept)
+        def after:DiskState (filePlan.applyToState(disk))
+        t.eqStr("and is untouched" (after.textOf("scripts/rgr.js")) "# somebody else's wrapper\n")
+    }
+
+    ; Somebody else's package.json keeps everything the tool does not set.
+    sfn testPackageJsonMerge:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def disk (new DiskState())
+        def existing:string "{\n  \"name\": \"northwind\",\n  \"workspaces\": [\n    \"packages/*\"\n  ],\n  \"scripts\": {\n    \"lint\": \"echo mine\"\n  }\n}\n"
+        disk.put("package.json" existing)
+        def filePlan:FilePlan (StarterTest.planFor(cfg disk))
+        def after:DiskState (filePlan.applyToState(disk))
+        def merged:string (after.textOf("package.json"))
+        t.isTrue("the author's script survives" (contains merged "\"lint\""))
+        t.isTrue("and a key the tool has never heard of" (contains merged "workspaces"))
+        t.isTrue("the tool's scripts are added" (contains merged "\"start\""))
+        t.isTrue("and the compiler is a devDependency" (contains merged "ranger-compiler"))
+
+        ; `lint` comes first because it was there first: the author's ordering is
+        ; not rearranged.
+        def lintAt:int (indexOf merged "\"lint\"")
+        def startAt:int (indexOf merged "\"start\"")
+        t.isTrue("the author's key keeps its position" (lintAt < startAt))
+    }
+
+    ; Prose outside the markers is preserved; a section the plan drops goes away.
+    sfn testMarkdownMerge:void (t:StarterCheck) {
+        def sections:[PlanSection]
+        push sections (PlanSection.about("AGENTS.md" "one" 100 "First." "core"))
+        push sections (PlanSection.about("AGENTS.md" "two" 200 "Second." "core"))
+        def rendered:string (StarterMarkdown.render(sections))
+        t.isTrue("a rendered file carries the markers" (contains rendered "<!-- ranger:start one -->"))
+
+        def edited:string (rendered + "\n## My own notes\n\nMine.\n")
+        def keepOne:[PlanSection]
+        push keepOne (PlanSection.about("AGENTS.md" "one" 100 "First, changed." "core"))
+        def merged:MarkdownMerge (StarterMarkdown.merge(edited keepOne))
+        t.isTrue("the merge succeeded" (merged.ok()))
+        t.isTrue("the surviving section was rewritten" (contains merged.text "First, changed."))
+        t.isFalse("the dropped section is gone" (contains merged.text "<!-- ranger:start two -->"))
+        t.isFalse("and so is its body" (contains merged.text "Second."))
+        t.isTrue("the author's prose survives" (contains merged.text "## My own notes"))
+        t.eqStr("and the merge says what it did" (merged.summary()) "1 replaced, 1 removed")
+
+        ; Merging the same sections again is a no-op, which is what makes the
+        ; managed file part of the zero-diff property.
+        def again:MarkdownMerge (StarterMarkdown.merge(merged.text keepOne))
+        t.eqStr("merging again changes nothing" again.text merged.text)
+        ; It still reports touching the region -- it rewrote it with the same
+        ; content. Whether a write is needed is the text comparison above, which is
+        ; the one the generator makes.
+        t.eqInt("it touched the one section it was given" (again.touchedCount()) 1)
+    }
+
+    sfn testMarkdownUnterminatedMarker:void (t:StarterCheck) {
+        def sections:[PlanSection]
+        push sections (PlanSection.about("AGENTS.md" "one" 100 "First." "core"))
+        def broken:string "<!-- ranger:start one -->\n\nFirst.\n"
+        def merged:MarkdownMerge (StarterMarkdown.merge(broken sections))
+        t.isFalse("an unclosed marker is refused" (merged.ok()))
+        t.eqStr("and the file is handed back untouched" merged.text broken)
+    }
+
+    ; A surface this build has never heard of is an error, not a silent
+    ; omission. Unknown keys are KEPT in the file, so a typo -- or a surface an
+    ; older version offered and this one dropped, which is what happened to
+    ; `server` -- would otherwise generate a project quietly missing it.
+    sfn testUnknownSurfaceIsAnError:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("server" true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isTrue("enabling a surface this version does not have is an error" (project.hasErrors()))
+        t.isTrue("and it names the surface" (StarterTest.problemAt(project "surfaces.server")))
+        t.eqInt("no files are planned from a configuration that cannot be met" (array_length project.files) 0)
+
+        ; Switched OFF, the same key is somebody's note to themselves and none of
+        ; the tool's business. It survives, and it is not an error.
+        def off:StarterConfig (StarterTest.cliConfig())
+        off.setEnabled("server" false)
+        def quiet:ProjectPlan (StarterTest.projectFor(off))
+        t.isFalse("a surface that is switched off is not a problem" (quiet.hasErrors()))
+        t.eqList("and nothing is reported about it" (off.unknownEnabledSurfaces()) "")
+
+        def typo:StarterConfig (StarterTest.cliConfig())
+        typo.setEnabled("wep" true)
+        t.eqList("a typo is caught the same way" (typo.unknownEnabledSurfaces()) "wep")
+    }
+
+    ; A surface that IS in the vocabulary but has no profile yet. Nothing is in
+    ; that state today -- every surface this build offers can be generated -- so
+    ; the registry is asked directly, with one profile held back. This is the
+    ; machinery that lets a surface be added to the configuration before its
+    ; profile exists without the tool offering something `apply` would refuse.
+    sfn testMissingProfileIsAnError:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        cfg.setEnabled("cli" true)
+
+        def full:StarterProfiles (StarterProfiles.registry())
+        t.eqList("with every profile present, nothing is missing" (full.missingFor(cfg)) "")
+
+        def partial (new StarterProfiles())
+        def kept:[StarterProfile]
+        for partial.list p:StarterProfile i {
+            if (p.id != "web") {
+                push kept p
+            }
+        }
+        partial.list = kept
+        t.eqList("hold one back and the enabled surface is named" (partial.missingFor(cfg)) "web")
+    }
+
+    sfn testValidation:void (t:StarterCheck) {
+        def noName:StarterConfig (StarterConfig.defaults("" "application"))
+        noName.setEnabled("cli" true)
+        def p1:ProjectPlan (StarterTest.projectFor(noName))
+        t.isTrue("a project with no name is an error" (p1.hasErrors()))
+
+        def badName:StarterConfig (StarterConfig.defaults("North Wind!" "application"))
+        badName.setEnabled("cli" true)
+        def p2:ProjectPlan (StarterTest.projectFor(badName))
+        t.isTrue("a name npm would reject is an error" (p2.hasErrors()))
+
+        def nothing:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        def p3:ProjectPlan (StarterTest.projectFor(nothing))
+        t.isTrue("no surfaces is an error" (p3.hasErrors()))
+
+        def badKind:StarterConfig (StarterConfig.defaults("northwind" "webapp"))
+        badKind.setEnabled("cli" true)
+        def p4:ProjectPlan (StarterTest.projectFor(badKind))
+        t.isTrue("a kind that is neither application nor library is an error" (p4.hasErrors()))
+
+        def future:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        future.setEnabled("cli" true)
+        future.root.putKey("schema" (JsonValue.fromInt(7)))
+        def p5:ProjectPlan (StarterTest.projectFor(future))
+        t.isTrue("a newer schema is an error, not a guess" (p5.hasErrors()))
+
+        def cliOnlyLlvm:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cliOnlyLlvm.setEnabled("cli" true)
+        def onlyLlvm:[string]
+        push onlyLlvm "llvm"
+        cliOnlyLlvm.setTargets("cli" onlyLlvm)
+        def p6:ProjectPlan (StarterTest.projectFor(cliOnlyLlvm))
+        t.isTrue("llvm alone cannot carry a command line surface" (p6.hasErrors()))
+
+        def unknownTarget:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        unknownTarget.setEnabled("cli" true)
+        def cobol:[string]
+        push cobol "cobol"
+        unknownTarget.setTargets("cli" cobol)
+        def p7:ProjectPlan (StarterTest.projectFor(unknownTarget))
+        t.isTrue("a target the compiler does not have is an error" (p7.hasErrors()))
+    }
+
+    ; The scripts a configuration produces are the visible half of what it means,
+    ; so they get asserted rather than eyeballed.
+    sfn testScripts:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def names:[string]
+        for (project.scriptsByName()) s:PlanScript i {
+            push names s.name
+        }
+        t.eqList("an application on es6 and go, with docs" names "build,build:go,check,docs,docs:check,doctor,plan,setup,start,test")
+
+        def lib:StarterConfig (StarterConfig.defaults("northwind" "library"))
+        lib.setEnabled("library" true)
+        def libTargets:[string]
+        push libTargets "kotlin"
+        push libTargets "typescript"
+        lib.setTargets("library" libTargets)
+        def libPlan:ProjectPlan (StarterTest.projectFor(lib))
+        def libNames:[string]
+        for (libPlan.scriptsByName()) s:PlanScript i {
+            push libNames s.name
+        }
+        t.eqList("a library packages every target that has a manifest" libNames "build:kotlin,build:typescript,check,doctor,package:kotlin,package:typescript,plan,setup,test")
+
+        ; TypeScript is not a `-l=` value. If this ever regresses the generated
+        ; project fails with "Invalid language : typescript".
+        def tsCommand:string ""
+        for (libPlan.scriptsByName()) s:PlanScript i {
+            if (s.name == "build:typescript") {
+                tsCommand = s.command
+            }
+        }
+        t.isTrue("typescript compiles as es6 with a flag" (contains tsCommand "-l=es6 -- -typescript"))
+        t.isTrue("kotlin packaging carries its package name" (contains (StarterTest.commandOf(libPlan "package:kotlin")) "-ktpackage=com.example.northwind"))
+    }
+
+    ; Skills are installed only when the tool ships them, and CLAUDE.md never
+    ; advertises one that is not on disk.
+    sfn testSkills:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.eqList("the skills the profiles asked for and the tool ships" (StarterText.sorted(project.skills)) "ranger-build,ranger-lang")
+        def langFile@(optional):PlanFile (project.fileAt(".claude/skills/ranger-lang/SKILL.md"))
+        t.isTrue("each one is a file in the plan" ((null? langFile) == false))
+        if ((null? langFile) == false) {
+            def f:PlanFile (unwrap langFile)
+            t.eqStr("with the shipped text" f.contents "# ranger-lang\n\nThe syntax traps.\n")
+        }
+        def claude@(optional):PlanFile (project.fileAt("CLAUDE.md"))
+        t.isTrue("CLAUDE.md is planned" ((null? claude) == false))
+        if ((null? claude) == false) {
+            def c:PlanFile (unwrap claude)
+            t.isTrue("and lists the skill with what it is for" (contains c.contents "**ranger-lang** — The Ranger syntax traps."))
+        }
+
+        ; `ranger-docs` is asked for when documentation is on, and this tool does
+        ; not ship it. It must not appear in the plan or in CLAUDE.md.
+        t.isFalse("a skill the tool does not ship is not listed" (StarterText.includes(project.skills "ranger-docs")))
+        def docsSkill@(optional):PlanFile (project.fileAt(".claude/skills/ranger-docs/SKILL.md"))
+        t.isTrue("and no file is planned for it" (null? docsSkill))
+
+        ; A tool that shipped nothing says so, and still plans the project.
+        def bare:ProjectPlan (StarterPlanner.plan((StarterTest.cliConfig()) (StarterTest.bundled()) (StarterTest.noAssets())))
+        t.isFalse("an unbuilt tool is not an error" (bare.hasErrors()))
+        t.eqInt("it installs no skills" (array_length bare.skills) 0)
+        t.isTrue("and still plans the project" ((array_length bare.files) > 0))
+        def warned:boolean false
+        for bare.problems p:StarterProblem i {
+            if (p.path == "agents.skills") {
+                warned = true
+            }
+        }
+        t.isTrue("with a warning that says why" warned)
+
+        ; `skills: "none"` is a choice, not a failure, so it warns about nothing.
+        def off:StarterConfig (StarterTest.cliConfig())
+        off.setAgents(true true "none")
+        def offPlan:ProjectPlan (StarterPlanner.plan(off (StarterTest.bundled()) (StarterTest.assets())))
+        t.eqInt("skills: none installs none" (array_length offPlan.skills) 0)
+        t.eqInt("and warns about nothing" (array_length offPlan.problems) 0)
+    }
+
+    sfn testGithubWorkflow:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is generated" ((null? ci) == false))
+        if (null? ci) {
+            return
+        }
+        def f:PlanFile (unwrap ci)
+        t.isTrue("it installs rather than npm ci, having no lockfile" (contains f.contents "run: npm install"))
+        ; `run: npm ci`, not bare "npm ci": the comment above the step explains why
+        ; it is not used, and naming it there must not fail this.
+        t.isFalse("and does not run npm ci" (contains f.contents "run: npm ci"))
+        t.isTrue("it runs the tests" (contains f.contents "run: npm test"))
+        t.isTrue("it builds the second target" (contains f.contents "npm run build:go"))
+        t.isTrue("and checks the documentation, which is on" (contains f.contents "npm run docs:check"))
+
+        ; Turning CI off removes the file, which is the managed-removal path for a
+        ; generated file rather than a surface.
+        def noCi:StarterConfig (StarterTest.cliConfig())
+        noCi.setCi(false false)
+        def without:ProjectPlan (StarterTest.projectFor(noCi))
+        def gone@(optional):PlanFile (without.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("and turning CI off does not plan one" (null? gone))
+    }
+
+    sfn testPlanJson:void (t:StarterCheck) {
+        def disk (new DiskState())
+        def filePlan:FilePlan (StarterTest.planFor((StarterTest.cliConfig()) disk))
+        def root:JsonValue (filePlan.asJson())
+        t.eqInt("the schema" (root.getInt("schema" 0)) 1)
+        t.isTrue("it is ok" (root.getBool("ok" false)))
+        t.isFalse("and not a no-op" (root.getBool("noop" true)))
+        def actions:JsonValue (root.getArray("actions"))
+        t.eqInt("one entry per action" (actions.itemCount()) (array_length filePlan.actions))
+        def first:JsonValue (itemAt actions.items 0)
+        t.eqStr("carrying the action" (first.getText("action" "")) "create")
+        t.eqStr("and the path" (first.getText("path" "")) ".claude/skills/ranger-build/SKILL.md")
+        t.isTrue("and whether it writes" (first.getBool("writes" false)))
+        ; It must be real JSON, because an agent parses it.
+        def parser (new StarterJson())
+        def reparsed:JsonValue (parser.parse((root.asText())))
+        t.isTrue("and the whole thing parses back" (parser.ok()))
+        t.eqInt("with the actions intact" ((reparsed.getArray("actions")).itemCount()) (array_length filePlan.actions))
+    }
+
+    sfn testVersionReading:void (t:StarterCheck) {
+        t.eqInt("node prints v22.1.0" (StarterText.firstNumber("v22.1.0")) 22)
+        t.eqInt("python prints Python 3.12.1" (StarterText.firstNumber("Python 3.12.1")) 3)
+        t.eqInt("go prints go version go1.22.1" (StarterText.firstNumber("go version go1.22.1")) 1)
+        t.eqInt("something with no number at all" (StarterText.firstNumber("no version here")) -1)
+        t.eqStr("a banner with several lines answers the first" (StarterText.firstLine("\n\nfirst line\nsecond\n")) "first line")
+        t.eqStr("and an empty one answers nothing" (StarterText.firstLine("")) "")
+    }
+
+    ; The doctor's verdict rule, including the cases this machine cannot be in.
+    sfn testDoctorVerdicts:void (t:StarterCheck) {
+        def node:PlanCheck (PlanCheck.atLeast("Ranger" "node" "node" 18 "install Node 18 or later"))
+        t.eqStr("a new enough node" (StarterDoctor.verdictOf("linux" node "v22.1.0")) "ok")
+        t.eqStr("an old node is actionable" (StarterDoctor.verdictOf("linux" node "v16.20.0")) "too-old")
+        t.eqStr("a missing node" (StarterDoctor.verdictOf("linux" node "")) "missing")
+
+        ; A version string the reader cannot parse must not be called too old.
+        t.eqStr("an unparseable version is accepted" (StarterDoctor.verdictOf("linux" node "some build")) "ok")
+
+        def optionalTool:PlanCheck (PlanCheck.tool("Command line" "go toolchain" "go" "needed to build the go output"))
+        optionalTool.optional = true
+        t.eqStr("a missing optional tool is not actionable" (StarterDoctor.verdictOf("linux" optionalTool "")) "optional")
+        t.eqStr("and a present one is fine" (StarterDoctor.verdictOf("linux" optionalTool "go version go1.24")) "ok")
+
+        ; The case that matters for iOS: generating on Linux is correct, building
+        ; there is not possible, and that is not a missing tool.
+        def macOnly:PlanCheck (PlanCheck.tool("iOS" "Xcode command line tools" "xcrun" "needs macOS"))
+        macOnly.onlyOn = "darwin"
+        t.eqStr("a mac-only check on linux is unavailable" (StarterDoctor.verdictOf("linux" macOnly "")) "unavailable")
+        t.eqStr("and is checked normally on a mac" (StarterDoctor.verdictOf("darwin" macOnly "")) "missing")
+        t.eqStr("and passes there when present" (StarterDoctor.verdictOf("darwin" macOnly "xcrun version 64")) "ok")
+    }
+
+    ; The compiler is looked for as a FILE, because asking npx about it answers
+    ; npm's version when it is there and an npm error when it is not.
+    sfn testCompilerCheckIsAFileCheck:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def found:boolean false
+        for project.checks c:PlanCheck i {
+            if (c.label == "ranger-compiler") {
+                found = true
+                t.isTrue("it looks for a file" (c.looksForFile()))
+                t.eqStr("in node_modules" c.pathToFind "node_modules/ranger-compiler/package.json")
+                t.eqStr("and reports the version from its manifest" c.versionKey "version")
+                t.isFalse("it is not optional: nothing builds without it" c.optional)
+            }
+            if (c.label == "node") {
+                t.eqInt("node must be 18 or later" c.minMajor 18)
+            }
+        }
+        t.isTrue("the compiler is checked" found)
+
+        ; `go version`, not `go --version`, which go rejects outright.
+        def goArgs:[string] (ProfileCli.versionArgsFor("go"))
+        t.eqList("go is asked the way go wants" goArgs "version")
+        t.eqList("and everything else the usual way" (ProfileCli.versionArgsFor("cargo")) "--version")
+        t.eqList("javac takes one dash" (ProfileCli.versionArgsFor("javac")) "-version")
+    }
+
+    ; --- the wizard -----------------------------------------------------------
+    ;
+    ; The state machine is pure, so a test is a key script and an assertion about
+    ; the configuration that comes out. These are the SAME scripts the screenshots
+    ; in docs/WIZARD.md are generated from, so a picture that goes stale is a test
+    ; that fails.
+
+    sfn press:StarterWizard (w:StarterWizard script:string) {
+        def keys:[string] (strsplit script " ")
+        for keys key:string i {
+            if ((strlen key) > 0) {
+                w.onKey(key)
+            }
+        }
+        return w
+    }
+
+    sfn freshWizard:StarterWizard () {
+        def cfg:StarterConfig (StarterConfig.defaults("" "application"))
+        return (StarterWizard.forConfig(cfg (StarterTest.bundled())))
+    }
+
+    sfn testWizardWalk:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        ; name, kind, surfaces (cli), targets (es6 + go), docs (strict),
+        ; agents (both), ci (yes), review.
+        StarterTest.press(w "n o r t h w i n d return")
+        StarterTest.press(w "return")
+        StarterTest.press(w "space return")
+        StarterTest.press(w "space down space return")
+        StarterTest.press(w "down down return")
+        StarterTest.press(w "down return")
+        StarterTest.press(w "return")
+        t.isFalse("the review screen is not the end until it is confirmed" w.done)
+        StarterTest.press(w "return")
+        t.isTrue("confirming the review finishes it" w.done)
+        t.isFalse("and it was not cancelled" w.cancelled)
+
+        def cfg:StarterConfig (w.configOf())
+        t.eqStr("the name that was typed" (cfg.projectName()) "northwind")
+        t.eqStr("the kind" (cfg.projectKind()) "application")
+        t.eqList("the surfaces" (cfg.enabledSurfaceIds()) "cli")
+        t.eqList("the targets" (cfg.targetsOf("cli")) "es6,go")
+        t.isTrue("documentation" (cfg.docsEnabled()))
+        t.isTrue("enforced" (cfg.docsStrict()))
+        t.isTrue("AGENTS.md" (cfg.wantsAgentsMd()))
+        t.isTrue("and CLAUDE.md" (cfg.wantsClaudeMd()))
+        t.isTrue("and a workflow" (cfg.wantsGithubCi()))
+
+        ; The property that matters more than any of the above: what the wizard
+        ; produces is a configuration the planner accepts. A questionnaire that can
+        ; build something the generator then refuses is worse than no questionnaire.
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.isFalse("and the planner accepts it" (project.hasErrors()))
+        t.isTrue("and plans a project from it" ((array_length project.files) > 0))
+    }
+
+    sfn testWizardRefusesABadName:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("an empty name does not advance" q.id "name")
+        t.isTrue("and says so" ((strlen q.problem) > 0))
+
+        StarterTest.press(w "N o r t h")
+        ; Key names arrive lowercase from readline, so an uppercase letter cannot
+        ; be typed -- but a digit first can, and npm rejects that.
+        def w2:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w2 "2 f a s t return")
+        def q2:WizardQuestion (w2.current())
+        t.eqStr("a name starting with a digit does not advance" q2.id "name")
+        t.isTrue("and says why" (contains q2.problem "lowercase letter"))
+
+        def w3:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w3 "a b space")
+        def q3:WizardQuestion (w3.current())
+        t.isTrue("a space in a name is refused with the fix" (contains q3.problem "cannot contain a space"))
+
+        ; And the rule is the planner's rule, so the two cannot disagree.
+        t.eqStr("the wizard and the planner share the name rule" (StarterWizard.nameProblem("northwind")) "")
+        t.isTrue("for a bad one too" ((strlen (StarterWizard.nameProblem("North Wind"))) > 0))
+    }
+
+    ; Every surface this build offers can be generated, so the wizard greys
+    ; nothing out today. The refusal is still tested, because it is what lets a
+    ; surface reach the configuration's vocabulary before its profile does.
+    sfn testWizardRefusesAnUnavailableOption:void (t:StarterCheck) {
+        def q (new WizardQuestion())
+        q.id = "surfaces"
+        q.kind = "multi"
+        q.minPicked = 1
+        push q.options (WizardOption.of("cli" "Command line" "an entry point"))
+        push q.options (WizardOption.unavailable("quantum" "Quantum" "not built yet -- no hardware"))
+
+        def w (new StarterWizard())
+        push w.questions q
+        StarterTest.press(w "down space")
+        t.isTrue("ticking one that is not built says so" (contains q.problem "not built yet"))
+        t.eqInt("and nothing is ticked" (q.countPicked()) 0)
+
+        ; Pressing return with nothing picked does not advance either.
+        StarterTest.press(w "return")
+        t.isFalse("it will not continue with nothing chosen" w.done)
+
+        StarterTest.press(w "up space")
+        t.eqInt("the one that IS built ticks" (q.countPicked()) 1)
+        t.eqList("and it is the right one" (q.pickedIds()) "cli")
+    }
+
+    ; And no surface is in that state: the wizard offers six, all selectable.
+    sfn testWizardOffersEverySurface:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the surfaces question is asked" q.id "surfaces")
+        def ids:[string]
+        def greyed:[string]
+        for q.options o:WizardOption i {
+            push ids o.id
+            if ((o.available) == false) {
+                push greyed o.id
+            }
+        }
+        t.eqList("it offers what the configuration has" ids "cli,library,web,desktop,android,ios")
+        t.eqList("and none of them is greyed" greyed "")
+    }
+
+    ; --- what an agent reads --------------------------------------------------
+
+    ; `describe --json` is the one call an agent makes before doing anything, so
+    ; what it says has to come from the same registries the tool itself reads --
+    ; not from a hand-kept list that drifts a version later.
+    sfn testDescribe:void (t:StarterCheck) {
+        def profiles:StarterProfiles (StarterProfiles.registry())
+        def root:JsonValue (StarterDescribe.describe(profiles (StarterTest.bundled()) ((StarterTest.assets()).skillNames())))
+        t.eqInt("it is versioned" (root.getInt("schema" 0)) 1)
+        t.eqStr("and names the file it is about" (root.getText("configFile" "")) "ranger.project.json")
+
+        def commands:JsonValue (root.getArray("commands"))
+        def names:[string]
+        for commands.items c:JsonValue i {
+            push names (c.getText("name" ""))
+        }
+        t.eqList("every command is listed" (StarterText.sorted(names)) "apply,configure,describe,doctor,init,plan,targets")
+
+        ; A surface is described as available exactly when a profile exists for
+        ; it, so this cannot claim something `apply` would refuse.
+        def surfaces:JsonValue (root.getArray("surfaces"))
+        def available:[string]
+        def unavailable:[string]
+        for surfaces.items sf:JsonValue i {
+            def sid:string (sf.getText("id" ""))
+            if (sf.getBool("available" false)) {
+                push available sid
+            } {
+                push unavailable sid
+                t.isTrue(("an unavailable surface says why: " + sid) ((strlen (sf.getText("why" ""))) > 0))
+            }
+        }
+        ; The `--devices` vocabulary has to be discoverable, or an agent guesses
+        ; `tablets` for `tablet` and gets a JSON error instead of a default.
+        def sawAndroidDevices:boolean false
+        def sawIosDevices:boolean false
+        for surfaces.items sf2:JsonValue i {
+            def sid2:string (sf2.getText("id" ""))
+            if (sid2 == "android") {
+                sawAndroidDevices = true
+                t.eqList("android's device types are described" (sf2.getStrings("devices")) "phone,tablet,tv,wear")
+                t.eqList("with a default that needs no answer" (sf2.getStrings("devicesDefault")) "phone")
+            }
+            if (sid2 == "ios") {
+                sawIosDevices = true
+                t.eqList("and ios's device families" (sf2.getStrings("devices")) "iphone,ipad")
+            }
+            if (sid2 == "cli") {
+                ; A surface with no device notion says nothing about devices at
+                ; all, rather than an empty list an agent would have to interpret.
+                t.eqInt("a surface without devices lists none" (array_length (sf2.getStrings("devices"))) 0)
+            }
+        }
+        t.isTrue("both mobile surfaces describe their devices" (sawAndroidDevices && sawIosDevices))
+
+        t.eqList("the surfaces this build generates" available "cli,library,web,desktop,android,ios")
+        ; Every surface this build offers has a profile, so `describe` claims
+        ; nothing `apply` would refuse -- which is the property, not the count.
+        t.eqList("and there is nothing it offers but cannot build" unavailable "")
+        t.eqInt("all six are described either way" ((array_length available) + (array_length unavailable)) 6)
+
+        ; The target list carries the one fact that breaks a generated command
+        ; when an agent gets it wrong.
+        def targets:JsonValue (root.getObject("targets"))
+        t.eqStr("the table says where it came from" (targets.getText("source" "")) "bundled")
+        def list:JsonValue (targets.getArray("list"))
+        def sawVariant:boolean false
+        for list.items entry:JsonValue i {
+            if ((entry.getText("id" "")) == "typescript") {
+                sawVariant = true
+                t.eqStr("typescript is marked as a variant, not a -l= value" (entry.getText("variantOf" "")) "es6")
+            }
+        }
+        t.isTrue("the variant is described" sawVariant)
+
+        t.eqList("the skills it can install" (root.getStrings("skills")) "ranger-build,ranger-lang")
+
+        ; The example has to be a configuration that actually plans, or it is
+        ; worse than no example.
+        def example:JsonValue (root.getObject("example"))
+        def cfg (new StarterConfig())
+        cfg.root = example
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.isFalse("and the example configuration plans cleanly" (project.hasErrors()))
+    }
+
+    ; --- the web surface ------------------------------------------------------
+
+    sfn webConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        def ts:[string]
+        push ts "es6"
+        cfg.setTargets("web" ts)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testWebSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.webConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("a web-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "doctor,plan,setup,start,test,web:build,web:compile,web:dev,web:preview")
+
+        ; `npm start` and `npm test` are what everybody types without reading
+        ; anything; a project where they answer "missing script" looks broken.
+        t.eqStr("start runs the dev server" (StarterTest.commandOf(project "start")) "npm run web:dev")
+        t.eqStr("and test type-checks, without pretending to be a test" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Web.rgr")
+
+        ; `-esm` is not optional: without it the es6 target writes CommonJS and
+        ; Vite fails with an error about `require` that reads like a bundler bug.
+        def compile:string (StarterTest.commandOf(project "web:compile"))
+        t.isTrue("the module is compiled as ESM" (contains compile "-esm"))
+        t.isTrue("into Vite's own root" (contains compile "-d=web/generated"))
+
+        def vite@(optional):PlanFile (project.fileAt("vite.config.js"))
+        t.isTrue("a vite config is written" ((null? vite) == false))
+        if ((null? vite) == false) {
+            def f:PlanFile (unwrap vite)
+            t.isTrue("rooted at web/" (contains f.contents "root: \"web\""))
+        }
+
+        ; The compiled module lives inside the tree rather than under build/, so
+        ; the profile has to say so -- the .gitignore is a core file.
+        t.isTrue("the generated module is gitignored" (StarterText.includes(project.ignores "web/generated/")))
+        def ignore@(optional):PlanFile (project.fileAt(".gitignore"))
+        if ((null? ignore) == false) {
+            def g:PlanFile (unwrap ignore)
+            t.isTrue("and the line is in the file" (contains g.contents "web/generated/"))
+            t.isTrue("beside the core entries" (contains g.contents "node_modules/"))
+        }
+
+        def seed@(optional):PlanFile (project.fileAt("src/Web.rgr"))
+        t.isTrue("the web entry is planned" ((null? seed) == false))
+        if ((null? seed) == false) {
+            def sd:PlanFile (unwrap seed)
+            t.isTrue("as a seed, not a generated file" sd.isSeed)
+            ; `-esm` exports the classes AND calls `main` at the bottom, so a
+            ; `main` in a web module would run on page load.
+            t.isFalse("with no main" (contains sd.contents "@(main)"))
+        }
+
+        def dep:boolean false
+        for (project.dependenciesByName()) d:PlanDependency i {
+            if (d.name == "vite") {
+                dep = true
+                t.isTrue("vite is a dev dependency" d.isDev)
+            }
+        }
+        t.isTrue("vite is depended on" dep)
+    }
+
+    ; Both surfaces at once: the command line keeps `start` and `test`, and the
+    ; two entry points do not collide.
+    sfn testWebAndCliTogether:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        cfg.setEnabled("web" true)
+        def webTargets:[string]
+        push webTargets "es6"
+        cfg.setTargets("web" webTargets)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("it plans cleanly" (project.hasErrors()))
+        t.eqStr("the command line still owns start" (StarterTest.commandOf(project "start")) "node scripts/rgr.js run src/Main.rgr")
+        t.eqStr("and test" (StarterTest.commandOf(project "test")) "node scripts/rgr.js run src/MainTest.rgr")
+        t.isTrue("the web scripts are there too" ((strlen (StarterTest.commandOf(project "web:dev"))) > 0))
+        def cliSeed@(optional):PlanFile (project.fileAt("src/Main.rgr"))
+        def webSeed@(optional):PlanFile (project.fileAt("src/Web.rgr"))
+        t.isTrue("both entry points are planned" (((null? cliSeed) == false) && ((null? webSeed) == false)))
+    }
+
+    sfn testWebRejectsAnImpossibleTarget:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.webConfig())
+        def ts:[string]
+        push ts "go"
+        cfg.setTargets("web" ts)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isTrue("a browser cannot run Go" (project.hasErrors()))
+
+        def tooling:StarterConfig (StarterTest.webConfig())
+        tooling.setOption("web" "tooling" "webpack")
+        def p2:ProjectPlan (StarterTest.projectFor(tooling))
+        t.isTrue("and only vite is known" (p2.hasErrors()))
+    }
+
+    ; --- the desktop surface --------------------------------------------------
+
+    sfn desktopConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("desktop" true)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testDesktopSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("a desktop-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "desktop:build,desktop:compile,desktop:run,desktop:smoke,doctor,plan,setup,start,test")
+
+        def compile:string (StarterTest.commandOf(project "desktop:compile"))
+        t.isTrue("the module is compiled to C++" (contains compile "-l=cpp"))
+        t.isTrue("into build/desktop" (contains compile "-d=build/desktop"))
+        t.isTrue("from the shared module" (contains compile "src/Shared.rgr"))
+        ; The atomics stay in unless somebody asks for them out.
+        t.isFalse("and reference counting keeps its atomics by default" (contains compile "-cpp-single-thread"))
+
+        t.eqStr("start runs the window" (StarterTest.commandOf(project "start")) "npm run desktop:run")
+        t.eqStr("and test type-checks the shared module" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Shared.rgr")
+
+        ; `SDL_VIDEODRIVER=dummy` is SDL's own null video driver: no window, no
+        ; window manager, and so nothing that will ever close the program. The
+        ; frame limit is what ends it, and without one the CI job hangs.
+        def smoke:string (StarterTest.commandOf(project "desktop:smoke"))
+        t.isTrue("the smoke test asks for no video" (contains smoke "SDL_VIDEODRIVER=dummy"))
+        t.isTrue("and gives the binary a frame limit" (contains smoke "northwind 30"))
+
+        def cmake@(optional):PlanFile (project.fileAt("desktop/CMakeLists.txt"))
+        t.isTrue("a CMake project is written" ((null? cmake) == false))
+        if ((null? cmake) == false) {
+            def c:PlanFile (unwrap cmake)
+            t.isFalse("generated, so the config stays the source of truth" c.isSeed)
+            t.isTrue("C++17, which SDL2 and the emitted code both need" (contains c.contents "CMAKE_CXX_STANDARD 17"))
+            ; Two ways, and it has to be two: find_package finds what Homebrew
+            ; and vcpkg ship, pkg-config finds the distribution package, which on
+            ; Debian and Ubuntu is the only one there is.
+            t.isTrue("SDL2 is looked for as a config package" (contains c.contents "find_package(SDL2 QUIET)"))
+            t.isTrue("and through pkg-config when that fails" (contains c.contents "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)"))
+            t.isTrue("the generated C++ is on the include path" (contains c.contents "build/desktop"))
+        }
+
+        def host@(optional):PlanFile (project.fileAt("desktop/host/main.cpp"))
+        t.isTrue("the host shell is planned" ((null? host) == false))
+        if ((null? host) == false) {
+            def h:PlanFile (unwrap host)
+            t.isTrue("as a seed, because what it draws is the point" h.isSeed)
+            ; Included, not linked: the C++ target emits one .cpp with the class
+            ; definitions in it and no header to go with them.
+            t.isTrue("it includes the module rather than linking it" (contains h.contents "#include \"Shared.cpp\""))
+            ; Up to ranger-compiler 3.5.1 the C++ prelude throws
+            ; std::out_of_range without declaring it. A whole program gets the
+            ; header through the iostream chain; a module does not.
+            t.isTrue("and <stdexcept> before it" (contains h.contents "#include <stdexcept>"))
+            t.isTrue("it opens a window" (contains h.contents "SDL_CreateWindow"))
+            t.isTrue("and pumps events" (contains h.contents "SDL_PollEvent"))
+            ; A container, a VM or CI has no accelerated renderer, and failing
+            ; there rather than falling back is the most common way a working
+            ; SDL2 program looks broken.
+            t.isTrue("the renderer falls back to software" (contains h.contents "SDL_RENDERER_SOFTWARE"))
+            t.isTrue("and the runtime gets its argv" (contains h.contents "__g_argc"))
+            ; Exiting 0 does not prove anything was drawn. Reading the pixels
+            ; back out of the renderer does, and it needs no display at all.
+            t.isTrue("a frame can be written to a file" (contains h.contents "--shot"))
+            t.isTrue("by reading the renderer back" (contains h.contents "SDL_RenderReadPixels"))
+        }
+
+        def seed@(optional):PlanFile (project.fileAt("src/Shared.rgr"))
+        t.isTrue("the shared module is planned" ((null? seed) == false))
+
+        t.isTrue("the generated C++ is gitignored" (StarterText.includes(project.ignores "build/desktop/")))
+        t.isTrue("and so is CMake's own output" (StarterText.includes(project.ignores "build/desktop-cmake/")))
+
+        def sectionIds:[string]
+        for project.sections s:PlanSection i {
+            push sectionIds s.id
+        }
+        t.isTrue("the agent file documents the surface" (StarterText.includes(sectionIds "surface-desktop")))
+
+        ; The one surface of the three hosts a plain runner can actually prove,
+        ; so it is the one that asks to be in CI -- and it brings what the runner
+        ; has to install first, because SDL2 is not there by default.
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is written" ((null? ci) == false))
+        if ((null? ci) == false) {
+            def w:PlanFile (unwrap ci)
+            t.isTrue("and it runs the smoke test" (contains w.contents "run: npm run desktop:smoke"))
+            t.isTrue("after installing SDL2" (contains w.contents "libsdl2-dev"))
+        }
+    }
+
+    ; Android wants an SDK and iOS wants a Mac. Neither belongs on a plain
+    ; runner, and a workflow that tries is a red build nobody can fix.
+    sfn testMobileStaysOutOfCi:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.androidConfig())
+        cfg.setEnabled("ios" true)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setCi(true true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is still written" ((null? ci) == false))
+        if ((null? ci) == false) {
+            def w:PlanFile (unwrap ci)
+            t.isFalse("but it does not assemble an APK" (contains w.contents "android:build"))
+            t.isFalse("nor install one" (contains w.contents "android:install"))
+            t.isFalse("and it does not try to build for iOS" (contains w.contents "ios:build"))
+            ; `npm test` is in it, and that type-checks the shared module -- which
+            ; is the part of a mobile project a Linux runner CAN check.
+            t.isTrue("it still runs the tests" (contains w.contents "run: npm test"))
+        }
+    }
+
+    ; `-cpp-single-thread` is offered because the generated host is
+    ; single-threaded. It is a warning rather than a refusal: it is the author's
+    ; program, and the flag is correct until a thread exists.
+    sfn testDesktopSingleThread:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        cfg.setFlag("desktop" "singleThread" true)
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("it is not an error" (project.hasErrors()))
+        def warned:boolean false
+        for project.problems p:StarterProblem i {
+            if (p.path == "surfaces.desktop.singleThread") {
+                warned = true
+                t.isTrue("but it is said out loud" (contains p.message "atomics"))
+            }
+        }
+        t.isTrue("the trade is stated" warned)
+        def compile:string (StarterTest.commandOf(project "desktop:compile"))
+        t.isTrue("and the flag reaches the compiler" (contains compile "-- -cpp-single-thread"))
+    }
+
+    sfn testDesktopRejectsAnotherRuntime:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.desktopConfig())
+        cfg.setOption("desktop" "runtime" "gtk")
+        t.isTrue("only sdl2 is known" (StarterTest.problemAt((StarterTest.projectFor(cfg)) "surfaces.desktop.runtime")))
+
+        def target:StarterConfig (StarterTest.desktopConfig())
+        def ts:[string]
+        push ts "es6"
+        target.setTargets("desktop" ts)
+        t.isTrue("and SDL2 is a C library, so the target is cpp" ((StarterTest.projectFor(target)).hasErrors()))
+    }
+
+    ; The binary is also the CMake target name, and npm names allow characters
+    ; CMake targets do not.
+    sfn testDesktopBinaryName:void (t:StarterCheck) {
+        t.eqStr("a plain name is used as it is" (ProfileDesktop.asBinaryName("northwind")) "northwind")
+        t.eqStr("a hyphen becomes an underscore" (ProfileDesktop.asBinaryName("north-wind")) "north_wind")
+        t.eqStr("and a scope too" (ProfileDesktop.asBinaryName("@acme/north-wind")) "_acme_north_wind")
+        t.eqStr("an empty name still names something" (ProfileDesktop.asBinaryName("")) "app")
+    }
+
+    ; Desktop, Android and iOS are three hosts for ONE module. That is the whole
+    ; claim, so it is the thing to test.
+    sfn testThreeHostsOneModule:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("desktop" true)
+        cfg.setEnabled("android" true)
+        cfg.setEnabled("ios" true)
+        def phones:[string]
+        push phones "phone"
+        cfg.setDevices("android" phones)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setAgents(true true "auto")
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("all three plan together" (project.hasErrors()))
+
+        def shared:int 0
+        for project.files f:PlanFile i {
+            if (f.path == "src/Shared.rgr") {
+                shared = shared + 1
+            }
+        }
+        t.eqInt("and the module is planned exactly once" shared 1)
+
+        def cpp:string (StarterTest.commandOf(project "desktop:compile"))
+        def kotlin:string (StarterTest.commandOf(project "android:compile"))
+        def swift:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("C++ comes from it" (contains cpp "src/Shared.rgr"))
+        t.isTrue("Kotlin from the same file" (contains kotlin "src/Shared.rgr"))
+        t.isTrue("and Swift from the same file" (contains swift "src/Shared.rgr"))
+        ; Three outputs, three directories. A shared one would have them
+        ; overwrite each other, which is a build that works until it does not.
+        t.isTrue("into three directories" (contains cpp "-d=build/desktop"))
+        t.isTrue("that do not collide" (contains kotlin "-d=platforms/android"))
+        t.isTrue("in any pair" (contains swift "-d=build/ios"))
+
+        ; `start` is one command, and the command line surface is not enabled, so
+        ; something has to claim it. Desktop is the only one of the three that
+        ; can actually run here.
+        t.eqStr("the window is what start runs" (StarterTest.commandOf(project "start")) "npm run desktop:run")
+    }
+
+    ; --- the two mobile surfaces ----------------------------------------------
+
+    ; Both are one Ranger module compiled twice, so the tests are mostly about
+    ; the things that do not fail the Ranger compile and fail much later: the
+    ; Kotlin package, the Swift host's struct name, and the `--` that decides
+    ; whether an argument reaches the program or the compiler.
+
+    ; The one line of a generated file a test cares about, so an assertion about
+    ; `minSdk` does not depend on every other number in the file.
+    sfn lineWith:string (text:string needle:string) {
+        for (StarterText.lines(text)) line:string i {
+            if (contains line needle) {
+                return line
+            }
+        }
+        return ""
+    }
+
+    sfn problemAt:boolean (project:ProjectPlan path:string) {
+        for project.problems p:StarterProblem i {
+            if (p.path == path) {
+                return true
+            }
+        }
+        return false
+    }
+
+    sfn androidConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("android" true)
+        def ds:[string]
+        push ds "phone"
+        cfg.setDevices("android" ds)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn iosConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("ios" true)
+        def ds:[string]
+        push ds "iphone"
+        push ds "ipad"
+        cfg.setDevices("ios" ds)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testAndroidSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.androidConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("an android-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "android:build,android:compile,android:install,doctor,plan,setup,start,test")
+
+        ; THE ONE THING THAT MUST AGREE. A mismatch between `-ktpackage` and the
+        ; host's `package` declaration compiles fine and fails in Gradle, as an
+        ; unresolved reference to a class that is right there in the source set.
+        def compile:string (StarterTest.commandOf(project "android:compile"))
+        t.isTrue("the kotlin package is passed to the compiler" (contains compile "-ktpackage=com.example.northwind"))
+        t.isTrue("after `--`, because it is a compiler flag" (contains compile "-- -ktpackage="))
+        t.isTrue("and the output goes into the app's source set" (contains compile "-d=platforms/android/app/src/main/generated"))
+
+        def activity@(optional):PlanFile (project.fileAt("platforms/android/app/src/main/kotlin/com/example/northwind/MainActivity.kt"))
+        t.isTrue("the host activity is planned under the package path" ((null? activity) == false))
+        if ((null? activity) == false) {
+            def act:PlanFile (unwrap activity)
+            t.isTrue("as a seed, because the app is the author's" act.isSeed)
+            t.isTrue("declaring the same package" (contains act.contents "package com.example.northwind"))
+            t.isTrue("and using the shared module" (contains act.contents "Shared()"))
+        }
+
+        def gradle@(optional):PlanFile (project.fileAt("platforms/android/app/build.gradle.kts"))
+        t.isTrue("an app build file is written" ((null? gradle) == false))
+        if ((null? gradle) == false) {
+            def g:PlanFile (unwrap gradle)
+            t.isFalse("it is generated, not a seed" g.isSeed)
+            t.isTrue("with the package as the namespace" (contains g.contents "namespace = \"com.example.northwind\""))
+            t.isTrue("and the generated source set added" (contains g.contents "src/main/generated"))
+            t.eqInt("a phone build keeps the low minimum" (StarterText.firstNumber((StarterTest.lineWith(g.contents "minSdk =")))) 24)
+        }
+
+        t.isTrue("the compiled kotlin is gitignored" (StarterText.includes(project.ignores "platforms/android/app/src/main/generated/")))
+        t.isTrue("and so is gradle's own output" (StarterText.includes(project.ignores "platforms/android/app/build/")))
+
+        ; `npm start` cannot run an APK, so it does the nearest useful thing
+        ; rather than answering "missing script".
+        t.eqStr("start installs on a device" (StarterTest.commandOf(project "start")) "npm run android:install")
+        t.eqStr("and test type-checks the shared module" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Shared.rgr")
+
+        def seed@(optional):PlanFile (project.fileAt("src/Shared.rgr"))
+        t.isTrue("the shared module is planned" ((null? seed) == false))
+        if ((null? seed) == false) {
+            def sd:PlanFile (unwrap seed)
+            t.isTrue("as a seed" sd.isSeed)
+            ; `App` would shadow SwiftUI's `App` protocol on the other target, so
+            ; the class is `Shared` on both.
+            t.isTrue("holding class Shared" (contains sd.contents "class Shared {"))
+            t.isFalse("with no main, because the platform calls the shell" (contains sd.contents "@(main)"))
+        }
+    }
+
+    ; Device types are not separate builds: they change the minimum SDK, the
+    ; manifest and the dependencies of ONE app.
+    sfn testAndroidDevices:void (t:StarterCheck) {
+        def tv:StarterConfig (StarterTest.androidConfig())
+        def tvDevices:[string]
+        push tvDevices "tv"
+        tv.setDevices("android" tvDevices)
+        def tvPlan:ProjectPlan (StarterTest.projectFor(tv))
+        t.isFalse("a TV build plans cleanly" (tvPlan.hasErrors()))
+        def manifest@(optional):PlanFile (tvPlan.fileAt("platforms/android/app/src/main/AndroidManifest.xml"))
+        if ((null? manifest) == false) {
+            def m:PlanFile (unwrap manifest)
+            ; Without this the app does not appear on a TV at all.
+            t.isTrue("the TV manifest carries a leanback launcher" (contains m.contents "LEANBACK_LAUNCHER"))
+            t.isTrue("and says the touchscreen is optional" (contains m.contents "android.hardware.touchscreen"))
+        }
+        def tvGradle@(optional):PlanFile (tvPlan.fileAt("platforms/android/app/build.gradle.kts"))
+        if ((null? tvGradle) == false) {
+            def tg:PlanFile (unwrap tvGradle)
+            t.isTrue("and the TV material set is depended on" (contains tg.contents "androidx.tv:tv-material"))
+        }
+
+        def wear:StarterConfig (StarterTest.androidConfig())
+        def wearDevices:[string]
+        push wearDevices "wear"
+        wear.setDevices("android" wearDevices)
+        def wearPlan:ProjectPlan (StarterTest.projectFor(wear))
+        def wearGradle@(optional):PlanFile (wearPlan.fileAt("platforms/android/app/build.gradle.kts"))
+        if ((null? wearGradle) == false) {
+            def wg:PlanFile (unwrap wearGradle)
+            ; Wear OS 3 is API 30; a lower minimum simply will not install.
+            t.eqInt("a watch build raises the minimum to 30" (StarterText.firstNumber((StarterTest.lineWith(wg.contents "minSdk =")))) 30)
+            t.isTrue("and asks for the watch's own compose material" (contains wg.contents "androidx.wear.compose"))
+        }
+        def wearManifest@(optional):PlanFile (wearPlan.fileAt("platforms/android/app/src/main/AndroidManifest.xml"))
+        if ((null? wearManifest) == false) {
+            def wm:PlanFile (unwrap wearManifest)
+            t.isTrue("the watch declares itself a watch" (contains wm.contents "android.hardware.type.watch"))
+        }
+
+        def none:StarterConfig (StarterTest.androidConfig())
+        def empty:[string]
+        none.setDevices("android" empty)
+        def nonePlan:ProjectPlan (StarterTest.projectFor(none))
+        t.isTrue("no device type at all is an error" (StarterTest.problemAt(nonePlan "surfaces.android.devices")))
+
+        def bogus:StarterConfig (StarterTest.androidConfig())
+        def wrong:[string]
+        push wrong "fridge"
+        bogus.setDevices("android" wrong)
+        def bogusPlan:ProjectPlan (StarterTest.projectFor(bogus))
+        t.isTrue("and an invented one is named as the problem" (StarterTest.problemAt(bogusPlan "surfaces.android.devices")))
+
+        ; Android's rule, not a generic identifier rule: `-` is legal in an Apple
+        ; bundle id and illegal here.
+        def badPkg:StarterConfig (StarterTest.androidConfig())
+        badPkg.setOption("android" "package" "com.example-northwind")
+        def badPlan:ProjectPlan (StarterTest.projectFor(badPkg))
+        t.isTrue("a hyphen is not an android package" (StarterTest.problemAt(badPlan "surfaces.android.package")))
+        def onePart:StarterConfig (StarterTest.androidConfig())
+        onePart.setOption("android" "package" "northwind")
+        t.isTrue("and neither is a single segment" (StarterTest.problemAt((StarterTest.projectFor(onePart)) "surfaces.android.package")))
+    }
+
+    sfn testIosSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.iosConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("an ios-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "doctor,ios:build,ios:compile,ios:plan,plan,setup,start,test")
+
+        ; Nothing here launches a simulator, so `start` builds the bundle.
+        t.eqStr("start builds the app" (StarterTest.commandOf(project "start")) "npm run ios:build")
+
+        def compile:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("the module is compiled to swift" (contains compile "-l=swift6"))
+        t.isTrue("into build/ios" (contains compile "-d=build/ios"))
+
+        ; `--` means "pass the rest to the COMPILER". Written with it, `--dry-run`
+        ; reached rgrc, the script saw no arguments, and the dry run silently
+        ; became a real build attempt.
+        def dry:string (StarterTest.commandOf(project "ios:plan"))
+        t.isTrue("the dry run passes its flag to the program" (contains dry "ios-build.rgr --dry-run"))
+        t.isFalse("not through `--` to the compiler" (contains dry "-- --dry-run"))
+
+        ; There is no .xcodeproj and no xcodebuild: the build is a Ranger program.
+        def build:string (StarterTest.commandOf(project "ios:build"))
+        t.isTrue("the build runs a ranger program" (contains build "run scripts/ios-build.rgr"))
+        t.isFalse("and never xcodebuild" (contains build "xcodebuild"))
+
+        def script@(optional):PlanFile (project.fileAt("scripts/ios-build.rgr"))
+        t.isTrue("the build script is planned" ((null? script) == false))
+        if ((null? script) == false) {
+            def sc2:PlanFile (unwrap script)
+            t.isFalse("and it is generated, so the config stays the source of truth" sc2.isSeed)
+            ; lib/apple ships inside ranger-compiler: nothing to install and
+            ; nothing to declare.
+            t.isTrue("it imports the bundled apple library" (contains sc2.contents "lib/apple/AppleAppBuilder.rgr"))
+            t.isTrue("carrying the bundle id" (contains sc2.contents "com.example.northwind"))
+            t.isTrue("both device families" (contains sc2.contents "AppleDeviceFamily.iphone()"))
+            t.isTrue("as chosen" (contains sc2.contents "AppleDeviceFamily.ipad()"))
+            t.isTrue("and the generated swift beside the host" (contains sc2.contents "build/ios/Shared.swift"))
+        }
+
+        ; The host struct cannot be named after the module: `Shared` is the class,
+        ; and `struct Shared: App` would collide with it.
+        def host@(optional):PlanFile (project.fileAt("platforms/ios/App.swift"))
+        t.isTrue("the swiftui host is planned" ((null? host) == false))
+        if ((null? host) == false) {
+            def h:PlanFile (unwrap host)
+            t.isTrue("as a seed" h.isSeed)
+            t.isTrue("named after the project, not the module" (contains h.contents "struct NorthwindApp: App"))
+            t.isTrue("and it holds the shared module" (contains h.contents "Shared()"))
+        }
+
+        t.isTrue("the generated swift is gitignored" (StarterText.includes(project.ignores "build/ios/")))
+
+        def phoneOnly:StarterConfig (StarterTest.iosConfig())
+        def one:[string]
+        push one "iphone"
+        phoneOnly.setDevices("ios" one)
+        def p2:ProjectPlan (StarterTest.projectFor(phoneOnly))
+        def s2@(optional):PlanFile (p2.fileAt("scripts/ios-build.rgr"))
+        if ((null? s2) == false) {
+            def f2:PlanFile (unwrap s2)
+            t.isFalse("an iPhone-only app does not claim the iPad" (contains f2.contents "AppleDeviceFamily.ipad()"))
+        }
+
+        ; Apple's rule is not Android's: a hyphen is legal, an underscore is not.
+        def hyphen:StarterConfig (StarterTest.iosConfig())
+        hyphen.setOption("ios" "bundleId" "com.example.north-wind")
+        t.isFalse("a hyphen is a legal bundle id" ((StarterTest.projectFor(hyphen)).hasErrors()))
+        def underscore:StarterConfig (StarterTest.iosConfig())
+        underscore.setOption("ios" "bundleId" "com.example.north_wind")
+        t.isTrue("an underscore is not" (StarterTest.problemAt((StarterTest.projectFor(underscore)) "surfaces.ios.bundleId")))
+
+        def noDevice:StarterConfig (StarterTest.iosConfig())
+        def empty:[string]
+        noDevice.setDevices("ios" empty)
+        t.isTrue("no device family is an error" (StarterTest.problemAt((StarterTest.projectFor(noDevice)) "surfaces.ios.devices")))
+        def wrongDevice:StarterConfig (StarterTest.iosConfig())
+        def w:[string]
+        push w "tv"
+        wrongDevice.setDevices("ios" w)
+        ; The vocabularies do not overlap on purpose, so `tv` belongs to Android
+        ; and is refused here.
+        t.isTrue("and an Android device type is not an iOS one" (StarterTest.problemAt((StarterTest.projectFor(wrongDevice)) "surfaces.ios.devices")))
+    }
+
+    ; Generating the iOS surface works on every machine; BUILDING it does not.
+    ; Off a Mac the checks have to read "unavailable" rather than "missing", or
+    ; somebody goes looking for a program they cannot install.
+    sfn testIosChecksAreUnavailableOffAMac:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.iosConfig())))
+        def sawXcrun:boolean false
+        for project.checks c:PlanCheck i {
+            if (c.group == "iOS") {
+                t.eqStr(("an iOS check is mac-only: " + c.label) c.onlyOn "darwin")
+                t.eqStr(("and it reads unavailable on linux: " + c.label) (StarterDoctor.verdictOf("linux" c "")) "unavailable")
+                if (c.program == "xcrun") {
+                    sawXcrun = true
+                }
+            }
+        }
+        t.isTrue("the toolchain is checked at all" sawXcrun)
+
+        ; And an unavailable check is nothing to act on: `doctor` must not fail a
+        ; Linux machine over a Mac-only build.
+        t.isFalse("unavailable is not actionable" (StarterDoctor.isActionable("unavailable")))
+        t.isTrue("missing still is" (StarterDoctor.isActionable("missing")))
+    }
+
+    ; One module, two targets: the entire point of the language, and the reason
+    ; both mobile surfaces default to `src/Shared.rgr` rather than one file each.
+    sfn testMobileSurfacesShareOneModule:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("android" true)
+        cfg.setEnabled("ios" true)
+        def phones:[string]
+        push phones "phone"
+        cfg.setDevices("android" phones)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setAgents(true true "auto")
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("both mobile surfaces plan together" (project.hasErrors()))
+
+        ; One seed, planned twice and claimed once: two profiles asking for the
+        ; same path must not produce two files.
+        def shared:int 0
+        for project.files f:PlanFile i {
+            if (f.path == "src/Shared.rgr") {
+                shared = shared + 1
+            }
+        }
+        t.eqInt("the shared module is planned exactly once" shared 1)
+
+        def android:string (StarterTest.commandOf(project "android:compile"))
+        def ios:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("kotlin is compiled from it" (contains android "src/Shared.rgr"))
+        t.isTrue("and swift from the same file" (contains ios "src/Shared.rgr"))
+        t.isTrue("into different directories" (contains android "-d=platforms/android"))
+        t.isTrue("that do not collide" (contains ios "-d=build/ios"))
+
+        ; Each host names the shared class, so a rename in the config would have
+        ; to move all three together.
+        def act@(optional):PlanFile (project.fileAt("platforms/android/app/src/main/kotlin/com/example/northwind/MainActivity.kt"))
+        def swift@(optional):PlanFile (project.fileAt("platforms/ios/App.swift"))
+        t.isTrue("both hosts are planned" (((null? act) == false) && ((null? swift) == false)))
+
+        def sectionIds:[string]
+        for project.sections s:PlanSection i {
+            push sectionIds s.id
+        }
+        t.isTrue("the agent file documents android" (StarterText.includes(sectionIds "surface-android")))
+        t.isTrue("and ios" (StarterText.includes(sectionIds "surface-ios")))
+    }
+
+    sfn testWizardSkipsIrrelevantQuestions:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        ; Pick library only. The command line target question must not be asked.
+        StarterTest.press(w "down space return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the library targets question is asked" q.id "targets:library")
+        StarterTest.press(w "space return")
+        def afterLibrary:WizardQuestion (w.current())
+        t.eqStr("and the cli one is skipped" afterLibrary.id "docs")
+    }
+
+    ; The device questions exist because the answer is not derivable: an Android
+    ; app for a watch and one for a phone are the same build with a different
+    ; minimum SDK, and nothing but an answer can tell them apart.
+    sfn testWizardAsksForDevices:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        ; cli 0, library 1, web 2, desktop 3, android 4, ios 5.
+        StarterTest.press(w "down down down down space down space return")
+        def q1:WizardQuestion (w.current())
+        t.eqStr("android's targets come first" q1.id "targets:android")
+        StarterTest.press(w "return")
+        def q2:WizardQuestion (w.current())
+        t.eqStr("then its devices" q2.id "devices:android")
+        t.eqInt("with the profile's default already ticked" (q2.countPicked()) 1)
+        t.eqList("which is the phone" (q2.pickedIds()) "phone")
+
+        ; Add the watch. Nothing about it is a separate build; it is this app with
+        ; a higher minimum.
+        StarterTest.press(w "down down down space return")
+        def q3:WizardQuestion (w.current())
+        t.eqStr("ios's targets are next" q3.id "targets:ios")
+        StarterTest.press(w "return")
+        def q4:WizardQuestion (w.current())
+        t.eqStr("then its device families" q4.id "devices:ios")
+        t.eqList("starting on the iPhone" (q4.pickedIds()) "iphone")
+        StarterTest.press(w "down space return")
+
+        def cfg:StarterConfig (w.configOf())
+        t.eqList("the android answer reaches the configuration" (cfg.devicesOf("android")) "phone,wear")
+        t.eqList("and the ios one" (cfg.devicesOf("ios")) "iphone,ipad")
+
+        ; And the configuration the wizard produced is one the planner accepts:
+        ; the wizard cannot offer an answer that fails validation.
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("what the wizard produced plans cleanly" (project.hasErrors()))
+    }
+
+    ; A device question cannot be confirmed empty, for the same reason the
+    ; surfaces one cannot: the planner would refuse the result.
+    sfn testWizardRefusesNoDevice:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        StarterTest.press(w "down down down down space return")
+        StarterTest.press(w "return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the devices question is asked" q.id "devices:android")
+        ; Untick the default and try to continue.
+        StarterTest.press(w "space")
+        t.eqInt("nothing is picked" (q.countPicked()) 0)
+        StarterTest.press(w "return")
+        def still:WizardQuestion (w.current())
+        t.eqStr("and it will not continue" still.id "devices:android")
+    }
+
+    ; A surface with no device notion is not asked about devices at all.
+    sfn testWizardSkipsDevicesForDesktopishSurfaces:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        StarterTest.press(w "space return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("a command line project is asked for targets" q.id "targets:cli")
+        StarterTest.press(w "space return")
+        def after:WizardQuestion (w.current())
+        t.eqStr("and goes straight on, with no devices question" after.id "docs")
+    }
+
+    sfn testWizardBackAndCancel:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return")
+        def onKind:WizardQuestion (w.current())
+        t.eqStr("on the kind question" onKind.id "kind")
+        StarterTest.press(w "left")
+        def backOnName:WizardQuestion (w.current())
+        t.eqStr("back to the name" backOnName.id "name")
+        t.eqStr("with what was typed still there" backOnName.text "demo")
+        StarterTest.press(w "backspace")
+        def edited:WizardQuestion (w.current())
+        t.eqStr("backspace edits the text rather than going back" edited.text "dem")
+
+        def w2:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w2 "escape")
+        t.isTrue("escape cancels" w2.cancelled)
+        t.isFalse("and cancelling is not finishing" w2.done)
+    }
+
+    ; The step counter changes when picking a surface adds a question, and that is
+    ; correct rather than a glitch -- but it must never run past the total.
+    sfn testWizardStepCounter:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        t.eqInt("the first step" (w.stepNumber()) 1)
+        def before:int (w.stepCount())
+        StarterTest.press(w "d e m o return return space return")
+        def after:int (w.stepCount())
+        t.isTrue("picking a surface adds its target question" (after > before))
+        t.isTrue("and the step is never past the total" ((w.stepNumber()) <= (w.stepCount())))
+    }
+
+    ; The view is a function of the state, which is what makes the screenshots
+    ; reproducible. These assert the parts a reader would notice going wrong.
+    sfn testWizardView:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        def view (new StarterWizardView())
+        def lines:[string] (view.render(w))
+        def text:string (StarterText.joinWith(lines "\n"))
+        t.isTrue("the header carries the step" (contains text "1 of 7"))
+        t.isTrue("the question" (contains text "What is the project called?"))
+        t.isTrue("the placeholder, marked as one" (contains text "for example: my-app"))
+        t.isTrue("and the keys that work here" (contains text "⏎ continue"))
+        t.isFalse("no back on the first screen" (contains text "← back"))
+
+        StarterTest.press(w "d e m o return return")
+        def surfaces:string (StarterText.joinWith((view.render(w)) "\n"))
+        t.isTrue("every surface is listed" (contains surfaces "Android"))
+        t.isTrue("with what it generates" (contains surfaces "Compose"))
+        t.isTrue("an empty checkbox" (contains surfaces "[ ] Library"))
+        t.isTrue("and a cursor" (contains surfaces "▸"))
+    }
+
+    ; Nothing is greyed today, so the renderer is shown one that is. Hiding an
+    ; unavailable surface would hide the plan; drawing it as selectable would
+    ; let somebody build a configuration that fails to apply. It is drawn, with
+    ; a dash where the checkbox goes and the reason beside it.
+    sfn testWizardViewGreysAnUnavailableRow:void (t:StarterCheck) {
+        def q (new WizardQuestion())
+        q.id = "surfaces"
+        q.kind = "multi"
+        q.title = "Where should it run?"
+        q.minPicked = 1
+        push q.options (WizardOption.of("cli" "Command line" "an entry point"))
+        push q.options (WizardOption.unavailable("quantum" "Quantum" "not built yet -- no hardware"))
+
+        def w (new StarterWizard())
+        push w.questions q
+        def view (new StarterWizardView())
+        def text:string (StarterText.joinWith((view.render(w)) "\n"))
+        t.isTrue("the unavailable row is shown, not hidden" (contains text "Quantum"))
+        t.isTrue("with the reason" (contains text "not built yet"))
+        t.isTrue("and no checkbox to tick" (contains text "–  Quantum"))
+        t.isTrue("beside one that can be" (contains text "[ ] Command line"))
+    }
+
+    sfn commandOf:string (project:ProjectPlan name:string) {
+        for (project.scriptsByName()) s:PlanScript i {
+            if (s.name == name) {
+                return s.command
+            }
+        }
+        return ""
+    }
+
+    ; The generated wrapper's target table comes from the target table, so a
+    ; target the compiler adds appears in it without anybody editing a template.
+    sfn testWrapperTableFollowsTargets:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def wrapper@(optional):PlanFile (project.fileAt("scripts/rgr.js"))
+        t.isTrue("the wrapper is planned" ((null? wrapper) == false))
+        if (null? wrapper) {
+            return
+        }
+        def f:PlanFile (unwrap wrapper)
+        t.isTrue("it knows about kotlin" (contains f.contents "kotlin: 'kt',"))
+        t.isTrue("and about llvm" (contains f.contents "llvm: 'll',"))
+        t.isFalse("and not about the typescript variant, which is not a -l= value" (contains f.contents "typescript: "))
+        t.isTrue("it resolves the compiler without npx" (contains f.contents "require.resolve('ranger-compiler/dist/rgrc.js')"))
+    }
+
+    ; A library project's own entry point is derived from the project name, and a
+    ; file name is not a class name.
+    sfn testNaming:void (t:StarterCheck) {
+        t.eqStr("a file stem is not the whole base name" (StarterText.stemName("src/Main.rgr")) "Main")
+        t.eqStr("a dotted directory is not confused for an extension" (StarterText.stemName("a.b/Main.rgr")) "Main")
+        t.eqStr("a name with no extension" (StarterText.stemName("src/Makefile")) "Makefile")
+        t.eqStr("pascal case" (StarterText.pascalCase("my-app_2")) "MyApp2")
+        t.eqStr("already pascal" (StarterText.pascalCase("Northwind")) "Northwind")
+        t.eqStr("a leading digit cannot start a class name" (StarterText.pascalCase("2fast")) "App2fast")
+        ; The bug this caught: pascalCase over the BASE NAME folded the extension
+        ; into the class, and the generated test was `src/MainRgrTest.rgr`.
+        t.eqStr("a class name from a path" (StarterText.pascalCase((StarterText.stemName("src/Main.rgr")))) "Main")
+    }
+
+    sfn testParentDirs:void (t:StarterCheck) {
+        t.eqList("every directory a path needs, outermost first" (StarterText.parentDirs("a/b/c/file.txt")) "a,a/b,a/b/c")
+        t.eqList("a file at the root needs none" (StarterText.parentDirs("file.txt")) "")
+        t.eqStr("dirName" (StarterText.dirName("a/b/c.txt")) "a/b")
+        t.eqStr("dirName of a bare name" (StarterText.dirName("c.txt")) "")
+    }
+
+    sfn testFingerprint:void (t:StarterCheck) {
+        def a:string "hello"
+        def b:string "hello!"
+        t.isTrue("the same text fingerprints the same" (StarterHash.matches(a (StarterHash.of(a)))))
+        t.isFalse("different text does not" (StarterHash.matches(b (StarterHash.of(a)))))
+        ; A transposition is the edit a weak hash misses, so it is the one worth
+        ; asserting.
+        t.isFalse("a transposition is caught" ((StarterHash.of("ab")) == (StarterHash.of("ba"))))
+        t.eqStr("an empty file has a fingerprint too" (StarterHash.of("")) "0-0-0")
+    }
+
+    sfn m@(main):void () {
+        def t (new StarterCheck())
+        print "starter core"
+        StarterTest.testJsonRoundTrip(t)
+        StarterTest.testUnknownKeysSurvive(t)
+        StarterTest.testJsonEscapes(t)
+        StarterTest.testJsonErrors(t)
+        StarterTest.testJsonNumbers(t)
+        StarterTest.testDefaults(t)
+        StarterTest.testReverseDomain(t)
+        StarterTest.testSurfaceReads(t)
+        StarterTest.testConfigRoundTrip(t)
+        StarterTest.testConfigLoadErrors(t)
+        StarterTest.testTargets(t)
+        StarterTest.testTargetsFromCompiler(t)
+        StarterTest.testNaming(t)
+        StarterTest.testParentDirs(t)
+        StarterTest.testFingerprint(t)
+        StarterTest.testValidation(t)
+        StarterTest.testMissingProfileIsAnError(t)
+        StarterTest.testUnknownSurfaceIsAnError(t)
+        StarterTest.testScripts(t)
+        StarterTest.testWrapperTableFollowsTargets(t)
+        StarterTest.testPlanGolden(t)
+        StarterTest.testIdempotent(t)
+        StarterTest.testSurfaceRemoval(t)
+        StarterTest.testHandEditedFileIsKept(t)
+        StarterTest.testForeignFileIsLeftAlone(t)
+        StarterTest.testPackageJsonMerge(t)
+        StarterTest.testMarkdownMerge(t)
+        StarterTest.testMarkdownUnterminatedMarker(t)
+        StarterTest.testSkills(t)
+        StarterTest.testGithubWorkflow(t)
+        StarterTest.testPlanJson(t)
+        StarterTest.testVersionReading(t)
+        StarterTest.testDoctorVerdicts(t)
+        StarterTest.testCompilerCheckIsAFileCheck(t)
+        StarterTest.testDescribe(t)
+        StarterTest.testWebSurface(t)
+        StarterTest.testWebAndCliTogether(t)
+        StarterTest.testWebRejectsAnImpossibleTarget(t)
+        StarterTest.testDesktopSurface(t)
+        StarterTest.testMobileStaysOutOfCi(t)
+        StarterTest.testDesktopSingleThread(t)
+        StarterTest.testDesktopRejectsAnotherRuntime(t)
+        StarterTest.testDesktopBinaryName(t)
+        StarterTest.testThreeHostsOneModule(t)
+        StarterTest.testAndroidSurface(t)
+        StarterTest.testAndroidDevices(t)
+        StarterTest.testIosSurface(t)
+        StarterTest.testIosChecksAreUnavailableOffAMac(t)
+        StarterTest.testMobileSurfacesShareOneModule(t)
+        StarterTest.testWizardWalk(t)
+        StarterTest.testWizardRefusesABadName(t)
+        StarterTest.testWizardRefusesAnUnavailableOption(t)
+        StarterTest.testWizardOffersEverySurface(t)
+        StarterTest.testWizardSkipsIrrelevantQuestions(t)
+        StarterTest.testWizardAsksForDevices(t)
+        StarterTest.testWizardRefusesNoDevice(t)
+        StarterTest.testWizardSkipsDevicesForDesktopishSurfaces(t)
+        StarterTest.testWizardBackAndCancel(t)
+        StarterTest.testWizardStepCounter(t)
+        StarterTest.testWizardView(t)
+        StarterTest.testWizardViewGreysAnUnavailableRow(t)
+        t.report("the starter core")
+    }
+}

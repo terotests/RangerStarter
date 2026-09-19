@@ -1,0 +1,179 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterProfile -- the seam a surface arrives through.
+;
+; The generator contains no `if web`, no `if android`, no `if desktop`. It asks
+; each enabled profile to contribute into the plan, in a fixed order, and a
+; profile is the only place that knows anything about its platform. Adding a
+; surface is a subclass and one line in `StarterProfiles`; it touches neither the
+; wizard, nor the planner, nor the generator, nor the doctor.
+;
+; WHY IT IS SEVEN METHODS RATHER THAN ONE. They are called in phases across ALL
+; profiles -- every profile's files, then every profile's scripts, and so on --
+; so that "a later contribution replaces an earlier one" has a meaning a profile
+; author can predict. With one `contribute` per profile, whether the web
+; profile's `docs` script won over the library profile's would depend on
+; registration order, which is exactly the kind of thing that is fine until the
+; day somebody adds a profile.
+;
+; The base class implements every method as a no-op, so a profile overrides only
+; what it has something to say about.
+
+Import "StarterConfig.rgr"
+Import "StarterPlan.rgr"
+Import "StarterText.rgr"
+Import "StarterTargets.rgr"
+
+class StarterProfile {
+
+    ; The surface id this profile serves: "cli", "web", "android"… It is also the
+    ; key in `ranger.project.json` and the suffix of its AGENTS.md section id, so
+    ; it is not free to change.
+    def id:string ""
+
+    Constructor () {
+    }
+
+    ; What the wizard shows. Defaults to the configuration's own title table, so
+    ; the two cannot drift.
+    fn title:string () {
+        return (StarterConfig.surfaceTitle(id))
+    }
+
+    ; Whether this surface can serve an application, a library, or both. A
+    ; configuration that enables a surface its kind does not support is a
+    ; validation error rather than a surface that quietly does nothing.
+    fn supportsKind:boolean (kind:string) {
+        return true
+    }
+
+    ; The targets this surface can be built with, or an empty list for "any the
+    ; compiler has". Android is kotlin; iOS is swift; a CLI is almost anything.
+    fn targetsAllowed:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; The target the wizard should offer first.
+    fn defaultTarget:string () {
+        return "es6"
+    }
+
+    ; The device types this surface understands, or an empty list when it has no
+    ; such notion. The vocabularies do not overlap between surfaces -- Android
+    ; has `phone`, iOS has `iphone` -- which is what lets one `--devices` list be
+    ; routed to the surfaces that know each name.
+    fn devicesKnown:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; What to use when a surface needs a device type and none was named.
+    fn devicesDefault:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; What the wizard shows for one device type, and what it says about it. On
+    ; the base so the wizard can build the question from `devicesKnown()` without
+    ; a table of its own -- the one thing that would drift the day a surface
+    ; gains a device type.
+    fn deviceLabel:string (device:string) {
+        return device
+    }
+
+    fn deviceHint:string (device:string) {
+        return ""
+    }
+
+    ; The Ranger file this surface compiles. Every profile that generates one
+    ; overrides this; the base answers "" so the planner can ask any profile
+    ; without knowing which surfaces have an entry point.
+    ;
+    ; It is on the base class because `npm test` and the API doc build need ONE
+    ; entry for the project, and picking it from a hardcoded surface chain in the
+    ; planner is how a mobile-only project ended up type-checking `src/Main.rgr`
+    ; -- a file it does not have.
+    fn entryOf:string (cfg:StarterConfig) {
+        return ""
+    }
+
+    ; What `npm start` should run when no surface has claimed it outright.
+    ; Answered by the profile and asked in registration order, so the surface
+    ; that wins is a property of the registry rather than of a chain of `if`s in
+    ; the planner -- which is what left a mobile-only project with no `start` at
+    ; all until somebody generated one.
+    ;
+    ; "" means this surface has nothing to offer: a library is not run, and a
+    ; command line surface sets `start` itself.
+    fn startCommand:string (cfg:StarterConfig) {
+        return ""
+    }
+
+    ; --- the seven contributions ---------------------------------------------
+    ;
+    ; `validate` runs first and may add problems; when any of them is an error,
+    ; nothing else runs and no plan is produced.
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeDependencies:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+    }
+
+    ; --- helpers every profile wants ------------------------------------------
+
+    ; The targets this surface was configured with, sorted into the target
+    ; table's order so the generated scripts do not depend on the order somebody
+    ; ticked the boxes in.
+    fn myTargets:[string] (cfg:StarterConfig targets:StarterTargets) {
+        return (targets.inTableOrder((cfg.targetsOf(id))))
+    }
+
+    ; Validate the surface's targets against what it allows and what the compiler
+    ; has. Every profile wants this and none of them should write it again.
+    fn checkTargets:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def chosen:[string] (cfg.targetsOf(id))
+        def allowed:[string] (this.targetsAllowed())
+        def path:string ("surfaces." + id)
+        if ((array_length chosen) == 0) {
+            plan.addProblem((StarterProblem.about(path ((this.title()) + " is enabled with no target chosen"))))
+            return
+        }
+        for chosen t:string i {
+            if ((targets.isKnown(t)) == false) {
+                def msg:string ("`" + t + "` is not a target this compiler has. " + (this.knownTargetsNote(targets)))
+                plan.addProblem((StarterProblem.about(path msg)))
+                continue
+            }
+            if ((array_length allowed) > 0) {
+                if ((StarterText.includes(allowed t)) == false) {
+                    def why:string ((this.title()) + " needs one of " + (StarterText.joinWith(allowed ", ")) + "; got `" + t + "`")
+                    plan.addProblem((StarterProblem.about(path why)))
+                }
+            }
+        }
+    }
+
+    fn knownTargetsNote:string (targets:StarterTargets) {
+        if (targets.source == "compiler") {
+            return ("The compiler offers: " + (StarterText.joinWith((targets.ids()) ", ")) + ".")
+        }
+        return ("This list is the bundled one -- `rgrc -targets -json` was not available. It offers: " + (StarterText.joinWith((targets.ids()) ", ")) + ".")
+    }
+}

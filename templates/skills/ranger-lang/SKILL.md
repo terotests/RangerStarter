@@ -7,13 +7,14 @@ description: Write or edit Ranger source (`.rgr`) without walking into the compi
 
 Ranger is LISP / S-expression based. The rules below are the ones whose error
 messages point somewhere other than the mistake, so they cost a debugging cycle
-each. `AGENTS.md` has the full list; this is what to check first.
+each. `AGENTS.md` in this project points here; the Ranger repository's own
+`AGENTS.md` has the longer list.
 
 ## Compile after every few functions
 
 ```bash
-scripts/rgr check src/File.rgr      # does it compile?
-scripts/rgr run   src/Main.rgr      # compile and run
+node scripts/rgr.js check src/File.rgr      # does it compile?
+node scripts/rgr.js run   src/Main.rgr      # compile and run
 ```
 
 A failed compile prints `[FAIL]` and `Compilation FAILED`. Later compilers also
@@ -22,9 +23,9 @@ installed is `npm install`'s answer, not yours. So never chain a run onto a buil
 with `&&`: that zero satisfies the `&&`, the PREVIOUS build is still on disk,
 node runs that one, and the edit looks applied when it is not.
 
-`scripts/rgr` deletes the output first and reads the log as well as the exit
+`scripts/rgr.js` deletes the output first and reads the log as well as the exit
 status, so it is right on either compiler. Use it rather than calling `rgrc`
-directly; every npm script here does.
+directly; every npm script in this project does.
 
 ## The errors that point at the wrong line
 
@@ -96,9 +97,9 @@ null at runtime. Treat such fields as optional when reading them.
 - No `abs` builtin — inline it.
 - Import each file by one consistent path form; mixing bare and relative imports
   of the same file has broken inherited-method resolution.
-- Some files in this repository are **CRLF**. A script that rewrites a whole
-  file will silently convert it and turn a 12-line change into 800. Check with
-  `file` before and after, or edit in place.
+- If a file in your tree is **CRLF**, a script that rewrites it whole will
+  silently convert it and turn a 12-line change into 800. Check with `file`
+  before and after, or edit in place.
 
 ## What differs between targets
 
@@ -117,12 +118,13 @@ When a program has to be right on more than one target, run it on more than
 one:
 
 ```bash
-scripts/rgr run src/MainTest.rgr
-scripts/rgr run src/MainTest.rgr -l=python
-scripts/rgr run src/MainTest.rgr -l=go
+node scripts/rgr.js run src/MainTest.rgr
+node scripts/rgr.js run src/MainTest.rgr -l=python
+node scripts/rgr.js run src/MainTest.rgr -l=go
 ```
 
-That takes seconds and is the only thing that actually checks the claim.
+That takes
+seconds and is the only thing that actually checks the claim.
 
 ## Public API doc blocks
 

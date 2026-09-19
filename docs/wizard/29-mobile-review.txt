@@ -1,0 +1,18 @@
+  Ranger project setup                                            11 of 11
+  ────────────────────────────────────────────────────────────────────────
+
+  Ready?
+
+  This writes `ranger.project.json` and generates the project from it.
+  Nothing is overwritten that you have edited.
+
+    project        northwind
+    kind           application
+    Android        kotlin -- phone, tablet
+    iOS            swift6 -- iphone, ipad
+    docs           no
+    agents         AGENTS.md
+    ci             GitHub Actions
+
+  ────────────────────────────────────────────────────────────────────────
+  ⏎ generate    ← back    esc cancel

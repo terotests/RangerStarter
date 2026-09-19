@@ -1,0 +1,17 @@
+ranger-starter: wrote ranger.project.json
+
+create    .claude/skills/ranger-build/SKILL.md
+create    .claude/skills/ranger-lang/SKILL.md
+create    .github/workflows/ci.yml
+create    .gitignore
+create    AGENTS.md
+create    CLAUDE.md
+create    README.md
+create    package.json
+create    ranger.json
+create    scripts/rgr.js
+create    src/Main.rgr                       a starting point; yours once it is written
+create    src/MainTest.rgr                   a starting point; yours once it is written
+
+
+12 created

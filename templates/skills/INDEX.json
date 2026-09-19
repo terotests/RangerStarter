@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "note": "The skills ranger-starter can install into a generated project. The host reads this file, then each SKILL.md, and hands them to the planner as data; a profile asks for a skill BY NAME and gets it only if it is listed here. Adding a skill is a directory and one entry -- no code change.",
+  "skills": [
+    { "name": "ranger-lang", "about": "The Ranger syntax traps. Generic: it is about the language, not about any project." },
+    { "name": "ranger-build", "about": "The build loop in a generated project: scripts/rgr.js, and why rgrc must never be called directly." }
+  ]
+}

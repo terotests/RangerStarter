@@ -1,0 +1,13 @@
+  Ranger project setup                                             6 of 11
+  ────────────────────────────────────────────────────────────────────────
+
+  iOS: which languages?
+
+  One source, compiled to each of these. They are the compiler's own
+  targets; a starred one is a variant compiled with an extra flag.
+
+  ▸ [ ] Swift 3
+    [x] Swift 6                 swiftpm packaging
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

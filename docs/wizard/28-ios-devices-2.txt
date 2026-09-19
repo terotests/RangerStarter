@@ -1,0 +1,13 @@
+  Ranger project setup                                             7 of 11
+  ────────────────────────────────────────────────────────────────────────
+
+  iOS: which devices?
+
+  One app, not one build each. These change the manifest, the minimum
+  version and what the store says the app runs on.
+
+    [x] iPhone                  UIDeviceFamily 1
+  ▸ [x] iPad                    UIDeviceFamily 2; both makes it unive…
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

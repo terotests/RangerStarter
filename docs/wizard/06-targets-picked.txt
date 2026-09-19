@@ -1,0 +1,26 @@
+  Ranger project setup                                              4 of 8
+  ────────────────────────────────────────────────────────────────────────
+
+  Command line: which languages?
+
+  One source, compiled to each of these. They are the compiler's own
+  targets; a starred one is a variant compiled with an extra flag.
+
+    [x] JavaScript (ES6)        the reference target, npm packaging, …
+  ▸ [x] Go                      runs here
+    [ ] Scala
+    [ ] Java
+    [ ] Swift 3
+    [ ] Swift 6                 swiftpm packaging
+    [ ] Kotlin                  gradle packaging
+    [ ] Dart                    pub packaging
+    [ ] C++
+    [ ] PHP
+    [ ] C#                      nuget packaging
+    [ ] Python                  pip packaging, runs here
+    [ ] Rust
+    [ ] LLVM IR                 experimental
+    [ ] TypeScript *            npm packaging, runs here
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

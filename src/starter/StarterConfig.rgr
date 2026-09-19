@@ -1,0 +1,610 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterConfig -- `ranger.project.json`, as a typed view over the tree it was
+; read from.
+;
+; THE CONFIGURATION IS THE PRODUCT. The wizard is one way to produce it; an
+; agent writing the file by hand is another, and both must reach the same
+; project. So this file is a VIEW over a `JsonValue`, not a set of fields copied
+; out of one. Two consequences, both of which are requirements rather than
+; conveniences:
+;
+;   * A key this program has never heard of survives a read and a write. That is
+;     what lets a later schema, or a hand-added field, live in the file without
+;     this version deleting it on the next `apply`.
+;
+;   * There is exactly one serialiser -- `JsonValue.asText` -- so the file this
+;     writes after changing one answer differs from the file it read in exactly
+;     that one answer.
+;
+; It is NOT `ranger.json`. That file belongs to the compiler: it names the entry
+; point and the Ranger package dependencies, and `rgrc install` reads it. This
+; one is the author's intent, and `ranger.json` is generated from it.
+
+Import "StarterJson.rgr"
+
+; A problem with a configuration, addressed by its path into the JSON so that a
+; message can be shown against the answer that caused it -- in the wizard, on a
+; line of the file, or in an agent's error output.
+class StarterProblem {
+
+    def path:string ""
+    def message:string ""
+
+    ; "error" stops a plan; "warning" does not.
+    def severity:string "error"
+
+    Constructor () {
+    }
+
+    sfn about:StarterProblem (path:string message:string) {
+        def p (new StarterProblem())
+        p.path = path
+        p.message = message
+        p.severity = "error"
+        return p
+    }
+
+    sfn warn:StarterProblem (path:string message:string) {
+        def p (new StarterProblem())
+        p.path = path
+        p.message = message
+        p.severity = "warning"
+        return p
+    }
+
+    fn isError:boolean () {
+        return (severity == "error")
+    }
+
+    fn asLine:string () {
+        return (path + "  " + message)
+    }
+}
+
+; What `load` answers. A configuration file somebody typed by hand is the most
+; likely thing in this program to be malformed, so loading reports rather than
+; throws.
+class StarterConfigLoad {
+
+    def ok:boolean false
+    def problem:string ""
+
+    ; The initialiser is INLINE, and that is not a style choice. A class field
+    ; declared `def config:StarterConfig` with no initialiser reads back as
+    ; OPTIONAL even when the constructor assigns it, so `load.config` could not be
+    ; passed to anything expecting a `StarterConfig` -- and there would be nothing
+    ; to unwrap, because every path through `load` sets it.
+    ;
+    ; A failed load therefore carries the defaults, so a caller that forgets to
+    ; check `ok` gets a usable configuration rather than a crash.
+    def config:StarterConfig (StarterConfig.defaults("app" "application"))
+
+    Constructor () {
+    }
+}
+
+class StarterConfig {
+
+    ; Inline, not assigned in the constructor: a field with no initialiser reads
+    ; back as OPTIONAL even when every path sets it, and this one is passed to
+    ; things that expect a `JsonValue`.
+    def root:JsonValue (JsonValue.newObject())
+
+    Constructor () {
+    }
+
+    ; --- the shape of the file ------------------------------------------------
+    ;
+    ; The canonical surface order. Every list the starter prints -- the wizard's
+    ; checkboxes, the plan, the doctor, the generated README -- uses it, so two
+    ; runs that chose the same surfaces never differ by ordering.
+
+    sfn surfaceIds:[string] () {
+        def out:[string]
+        push out "cli"
+        push out "library"
+        push out "web"
+        push out "desktop"
+        push out "android"
+        push out "ios"
+        return out
+    }
+
+    sfn surfaceTitle:string (id:string) {
+        switch id {
+            case "cli" {
+                return "Command line"
+            }
+            case "library" {
+                return "Library"
+            }
+            case "web" {
+                return "Web"
+            }
+            case "desktop" {
+                return "Desktop (SDL2)"
+            }
+            case "android" {
+                return "Android"
+            }
+            case "ios" {
+                return "iOS"
+            }
+        }
+        return id
+    }
+
+    ; `cli` and `library` compile the same source to several targets at once and
+    ; hold `targets`. Every other surface has one host and holds `target`. The
+    ; accessors below hide the difference; the generator never sees it.
+    sfn isMultiTarget:boolean (id:string) {
+        if (id == "cli") {
+            return true
+        }
+        if (id == "library") {
+            return true
+        }
+        return false
+    }
+
+    ; --- construction ---------------------------------------------------------
+
+    ; A complete file with every surface present and disabled. Writing the
+    ; disabled surfaces out rather than omitting them is deliberate: the file is
+    ; then a menu an author -- or an agent -- can edit by flipping one boolean,
+    ; without knowing the schema.
+    sfn defaults:StarterConfig (name:string kind:string) {
+        def c (new StarterConfig())
+        def r:JsonValue (JsonValue.newObject())
+        r.putKey("schema" (JsonValue.fromInt(1)))
+        r.putKey("name" (JsonValue.fromText(name)))
+        r.putKey("kind" (JsonValue.fromText(kind)))
+        r.putKey("license" (JsonValue.fromText("MIT")))
+
+        def surfaces:JsonValue (JsonValue.newObject())
+        def ids:[string] (StarterConfig.surfaceIds())
+        for ids id:string i {
+            surfaces.putKey(id (StarterConfig.defaultSurface(id name)))
+        }
+        r.putKey("surfaces" surfaces)
+
+        def docs:JsonValue (JsonValue.newObject())
+        docs.putKey("enabled" (JsonValue.fromBool(false)))
+        docs.putKey("api" (JsonValue.fromBool(false)))
+        docs.putKey("strict" (JsonValue.fromBool(false)))
+        r.putKey("documentation" docs)
+
+        def agents:JsonValue (JsonValue.newObject())
+        agents.putKey("agentsMd" (JsonValue.fromBool(true)))
+        agents.putKey("claude" (JsonValue.fromBool(false)))
+        agents.putKey("skills" (JsonValue.fromText("auto")))
+        r.putKey("agents" agents)
+
+        def ci:JsonValue (JsonValue.newObject())
+        ci.putKey("github" (JsonValue.fromBool(true)))
+        ci.putKey("targetMatrix" (JsonValue.fromBool(true)))
+        r.putKey("ci" ci)
+
+        c.root = r
+        return c
+    }
+
+    ; The default shape of one surface. The keys are written even when empty, for
+    ; the same reason the disabled surfaces are.
+    sfn defaultSurface:JsonValue (id:string name:string) {
+        def s:JsonValue (JsonValue.newObject())
+        s.putKey("enabled" (JsonValue.fromBool(false)))
+        switch id {
+            case "cli" {
+                s.putKey("targets" (JsonValue.newArray()))
+                s.putKey("entry" (JsonValue.fromText("src/Main.rgr")))
+            }
+            case "library" {
+                s.putKey("targets" (JsonValue.newArray()))
+            }
+            case "web" {
+                s.putKey("target" (JsonValue.fromText("es6")))
+                s.putKey("tooling" (JsonValue.fromText("vite")))
+                ; Its OWN entry point, not the command line one. `-esm` exports the
+                ; classes and still calls `main` at the bottom of the file, so
+                ; compiling a program with a `main` for the browser would run it on
+                ; page load. A web module has no `main`.
+                s.putKey("entry" (JsonValue.fromText("src/Web.rgr")))
+            }
+            case "desktop" {
+                s.putKey("target" (JsonValue.fromText("cpp")))
+                s.putKey("runtime" (JsonValue.fromText("sdl2")))
+                ; The SAME module the mobile surfaces use. A window is a third
+                ; host for the application, not a third copy of it.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
+                ; `-cpp-single-thread` drops the atomics from reference
+                ; counting. It is faster and it is WRONG the moment a pointer is
+                ; copied across threads, so it is off unless somebody says
+                ; otherwise, in the file, where the choice is visible.
+                s.putKey("singleThread" (JsonValue.fromBool(false)))
+            }
+            case "android" {
+                s.putKey("target" (JsonValue.fromText("kotlin")))
+                s.putKey("package" (JsonValue.fromText((StarterConfig.reverseDomain(name)))))
+                s.putKey("devices" (JsonValue.newArray()))
+                ; The SAME module as iOS. One source compiled to Kotlin here and
+                ; to Swift there is the entire point of the language; two
+                ; near-identical modules would be the opposite of it.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
+            }
+            case "ios" {
+                s.putKey("target" (JsonValue.fromText("swift6")))
+                s.putKey("bundleId" (JsonValue.fromText((StarterConfig.reverseDomain(name)))))
+                s.putKey("devices" (JsonValue.newArray()))
+                ; `Shared`, not `App`: `App` is a SwiftUI PROTOCOL, and a class
+                ; of that name makes `struct MyApp: App` resolve to the wrong
+                ; thing.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
+            }
+        }
+        return s
+    }
+
+    ; `com.example.<name>`, with everything an Android package or an Apple bundle
+    ; id may not carry removed. A guess the author will edit, not a guess the
+    ; build will trip over.
+    sfn reverseDomain:string (name:string) {
+        def cleaned:string ""
+        def cnt:int (strlen name)
+        def i:int 0
+        while (i < cnt) {
+            def c:int (charAt name i)
+            def keep:boolean false
+            if (c >= 97) {
+                if (c <= 122) {
+                    keep = true
+                }
+            }
+            if (c >= 48) {
+                if (c <= 57) {
+                    keep = true
+                }
+            }
+            if (c >= 65) {
+                if (c <= 90) {
+                    keep = true
+                    c = c + 32
+                }
+            }
+            if keep {
+                cleaned = cleaned + (strfromcode c)
+            }
+            i = i + 1
+        }
+        if ((strlen cleaned) == 0) {
+            cleaned = "app"
+        }
+        ; A leading digit is legal in neither, so a name that starts with one
+        ; gets a letter in front rather than being silently reordered.
+        def firstCode:int (charAt cleaned 0)
+        if (firstCode >= 48) {
+            if (firstCode <= 57) {
+                cleaned = "a" + cleaned
+            }
+        }
+        return ("com.example." + cleaned)
+    }
+
+    ; --- loading and saving ---------------------------------------------------
+
+    sfn load:StarterConfigLoad (text:string) {
+        def result (new StarterConfigLoad())
+        def parser (new StarterJson())
+        def root:JsonValue (parser.parse(text))
+        if ((parser.ok()) == false) {
+            result.ok = false
+            result.problem = parser.problem
+            result.config = (StarterConfig.defaults("app" "application"))
+            return result
+        }
+        if ((root.isObject()) == false) {
+            result.ok = false
+            result.problem = "the project file must be a JSON object"
+            result.config = (StarterConfig.defaults("app" "application"))
+            return result
+        }
+        def c (new StarterConfig())
+        c.root = root
+        result.ok = true
+        result.config = c
+        return result
+    }
+
+    fn asText:string () {
+        return (root.asText())
+    }
+
+    ; --- reads ----------------------------------------------------------------
+
+    fn schemaVersion:int () {
+        return (root.getInt("schema" 0))
+    }
+
+    fn projectName:string () {
+        return (root.getText("name" ""))
+    }
+
+    fn projectKind:string () {
+        return (root.getText("kind" "application"))
+    }
+
+    fn licenseId:string () {
+        return (root.getText("license" "MIT"))
+    }
+
+    fn isLibrary:boolean () {
+        return ((this.projectKind()) == "library")
+    }
+
+    fn surfaces:JsonValue () {
+        return (root.getObject("surfaces"))
+    }
+
+    fn surfaceOf:JsonValue (id:string) {
+        def all:JsonValue (this.surfaces())
+        return (all.getObject(id))
+    }
+
+    fn isEnabled:boolean (id:string) {
+        def s:JsonValue (this.surfaceOf(id))
+        return (s.getBool("enabled" false))
+    }
+
+    ; Surfaces the file switches on that this tool has no idea about: a typo
+    ; (`wep`), or a surface a later version adds and this one does not have --
+    ; or one an earlier version offered and this one dropped.
+    ;
+    ; It matters because the file is the source of truth and unknown keys are
+    ; KEPT. Without this, `"wep": { "enabled": true }` generates a project with
+    ; no web surface and says nothing at all, which is the one failure this
+    ; design is supposed to make impossible.
+    fn unknownEnabledSurfaces:[string] () {
+        def out:[string]
+        def known:[string] (StarterConfig.surfaceIds())
+        def all:JsonValue (this.surfaces())
+        for all.order id:string i {
+            if (StarterText.includes(known id)) {
+                continue
+            }
+            def s:JsonValue (all.getObject(id))
+            if (s.getBool("enabled" false)) {
+                push out id
+            }
+        }
+        return out
+    }
+
+    ; The enabled surfaces, in canonical order rather than file order.
+    fn enabledSurfaceIds:[string] () {
+        def out:[string]
+        def ids:[string] (StarterConfig.surfaceIds())
+        for ids id:string i {
+            if (this.isEnabled(id)) {
+                push out id
+            }
+        }
+        return out
+    }
+
+    ; The targets of one surface, whichever way that surface spells them.
+    fn targetsOf:[string] (id:string) {
+        def s:JsonValue (this.surfaceOf(id))
+        if (StarterConfig.isMultiTarget(id)) {
+            return (s.getStrings("targets"))
+        }
+        def out:[string]
+        def one:string (s.getText("target" ""))
+        if ((strlen one) > 0) {
+            push out one
+        }
+        return out
+    }
+
+    fn devicesOf:[string] (id:string) {
+        def s:JsonValue (this.surfaceOf(id))
+        return (s.getStrings("devices"))
+    }
+
+    fn optionOf:string (id:string key:string fallback:string) {
+        def s:JsonValue (this.surfaceOf(id))
+        return (s.getText(key fallback))
+    }
+
+    fn flagOf:boolean (id:string key:string fallback:boolean) {
+        def s:JsonValue (this.surfaceOf(id))
+        return (s.getBool(key fallback))
+    }
+
+    ; Every target any enabled surface asked for, deduplicated. Not sorted here:
+    ; `StarterTargets.inTableOrder` does that, because the order belongs to the
+    ; target table and not to the configuration.
+    fn allTargetIds:[string] () {
+        def out:[string]
+        def ids:[string] (this.enabledSurfaceIds())
+        for ids id:string i {
+            def ts:[string] (this.targetsOf(id))
+            for ts t:string j {
+                def seen:boolean false
+                for out o:string k {
+                    if (o == t) {
+                        seen = true
+                    }
+                }
+                if (seen == false) {
+                    push out t
+                }
+            }
+        }
+        return out
+    }
+
+    fn documentation:JsonValue () {
+        return (root.getObject("documentation"))
+    }
+
+    fn docsEnabled:boolean () {
+        def d:JsonValue (this.documentation())
+        return (d.getBool("enabled" false))
+    }
+
+    fn docsApi:boolean () {
+        def d:JsonValue (this.documentation())
+        return (d.getBool("api" false))
+    }
+
+    fn docsStrict:boolean () {
+        def d:JsonValue (this.documentation())
+        return (d.getBool("strict" false))
+    }
+
+    fn agents:JsonValue () {
+        return (root.getObject("agents"))
+    }
+
+    fn wantsAgentsMd:boolean () {
+        def a:JsonValue (this.agents())
+        return (a.getBool("agentsMd" false))
+    }
+
+    fn wantsClaudeMd:boolean () {
+        def a:JsonValue (this.agents())
+        return (a.getBool("claude" false))
+    }
+
+    fn skillsMode:string () {
+        def a:JsonValue (this.agents())
+        return (a.getText("skills" "auto"))
+    }
+
+    fn wantsGithubCi:boolean () {
+        def c:JsonValue (root.getObject("ci"))
+        return (c.getBool("github" false))
+    }
+
+    fn wantsTargetMatrix:boolean () {
+        def c:JsonValue (root.getObject("ci"))
+        return (c.getBool("targetMatrix" false))
+    }
+
+    ; --- writes ---------------------------------------------------------------
+    ;
+    ; Every write goes through the tree, so the wizard and an agent's edit of the
+    ; file are the same change.
+
+    fn setName:void (name:string) {
+        root.putKey("name" (JsonValue.fromText(name)))
+    }
+
+    fn setKind:void (kind:string) {
+        root.putKey("kind" (JsonValue.fromText(kind)))
+    }
+
+    fn setLicense:void (license:string) {
+        root.putKey("license" (JsonValue.fromText(license)))
+    }
+
+    ; Fetch the surface object for writing, materialising it -- and the
+    ; `surfaces` object above it -- when the file did not have one.
+    fn surfaceForWrite:JsonValue (id:string) {
+        def all@(optional):JsonValue (root.getKey("surfaces"))
+        def container:JsonValue (JsonValue.newObject())
+        if (null? all) {
+            root.putKey("surfaces" container)
+        } {
+            def existing:JsonValue (unwrap all)
+            if (existing.isObject()) {
+                container = existing
+            } {
+                root.putKey("surfaces" container)
+            }
+        }
+        def hit@(optional):JsonValue (container.getKey(id))
+        if (null? hit) {
+            def fresh:JsonValue (StarterConfig.defaultSurface(id (this.projectName())))
+            container.putKey(id fresh)
+            return fresh
+        }
+        def s:JsonValue (unwrap hit)
+        if ((s.isObject()) == false) {
+            def replacement:JsonValue (StarterConfig.defaultSurface(id (this.projectName())))
+            container.putKey(id replacement)
+            return replacement
+        }
+        return s
+    }
+
+    fn setEnabled:void (id:string flag:boolean) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        s.putKey("enabled" (JsonValue.fromBool(flag)))
+    }
+
+    fn setTargets:void (id:string list:[string]) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        if (StarterConfig.isMultiTarget(id)) {
+            s.putKey("targets" (JsonValue.fromStrings(list)))
+            return
+        }
+        if ((array_length list) == 0) {
+            s.putKey("target" (JsonValue.fromText("")))
+            return
+        }
+        s.putKey("target" (JsonValue.fromText((itemAt list 0))))
+    }
+
+    fn setDevices:void (id:string list:[string]) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        s.putKey("devices" (JsonValue.fromStrings(list)))
+    }
+
+    fn setOption:void (id:string key:string value:string) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        s.putKey(key (JsonValue.fromText(value)))
+    }
+
+    fn setFlag:void (id:string key:string value:boolean) {
+        def s:JsonValue (this.surfaceForWrite(id))
+        s.putKey(key (JsonValue.fromBool(value)))
+    }
+
+    fn objectForWrite:JsonValue (key:string) {
+        def hit@(optional):JsonValue (root.getKey(key))
+        if (null? hit) {
+            def fresh:JsonValue (JsonValue.newObject())
+            root.putKey(key fresh)
+            return fresh
+        }
+        def v:JsonValue (unwrap hit)
+        if ((v.isObject()) == false) {
+            def replacement:JsonValue (JsonValue.newObject())
+            root.putKey(key replacement)
+            return replacement
+        }
+        return v
+    }
+
+    fn setDocs:void (enabled:boolean api:boolean strict:boolean) {
+        def d:JsonValue (this.objectForWrite("documentation"))
+        d.putKey("enabled" (JsonValue.fromBool(enabled)))
+        d.putKey("api" (JsonValue.fromBool(api)))
+        d.putKey("strict" (JsonValue.fromBool(strict)))
+    }
+
+    fn setAgents:void (agentsMd:boolean claude:boolean skills:string) {
+        def a:JsonValue (this.objectForWrite("agents"))
+        a.putKey("agentsMd" (JsonValue.fromBool(agentsMd)))
+        a.putKey("claude" (JsonValue.fromBool(claude)))
+        a.putKey("skills" (JsonValue.fromText(skills)))
+    }
+
+    fn setCi:void (github:boolean targetMatrix:boolean) {
+        def c:JsonValue (this.objectForWrite("ci"))
+        c.putKey("github" (JsonValue.fromBool(github)))
+        c.putKey("targetMatrix" (JsonValue.fromBool(targetMatrix)))
+    }
+}

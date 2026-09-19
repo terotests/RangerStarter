@@ -1,0 +1,87 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterProfiles -- the registry.
+;
+; Adding a surface is: a subclass of `StarterProfile`, and one `push` here. That
+; is the whole extension point, and it is deliberately the only file that knows
+; which profiles exist.
+;
+; The registry is built in the configuration's canonical surface order, not in
+; the order the profiles were written, so contribution order -- and therefore
+; which profile wins a name collision -- is a property of the configuration
+; rather than of this file's history.
+;
+; WHAT IS NOT HERE YET: server. The configuration already has its shape, the
+; wizard will offer it, and enabling it is an error that says so rather than a
+; surface that silently does nothing. See PLAN_STARTER.md milestone M8.
+
+Import "ProfileCli.rgr"
+Import "ProfileLibrary.rgr"
+Import "ProfileWeb.rgr"
+Import "ProfileDesktop.rgr"
+Import "ProfileAndroid.rgr"
+Import "ProfileIos.rgr"
+
+class StarterProfiles {
+
+    def list:[StarterProfile]
+
+    Constructor () {
+        push list (new ProfileCli())
+        push list (new ProfileLibrary())
+        push list (new ProfileWeb())
+        push list (new ProfileDesktop())
+        push list (new ProfileAndroid())
+        push list (new ProfileIos())
+    }
+
+    sfn registry:StarterProfiles () {
+        return (new StarterProfiles())
+    }
+
+    fn find@(optional):StarterProfile (id:string) {
+        for list p:StarterProfile i {
+            if (p.id == id) {
+                def hit@(optional):StarterProfile p
+                return hit
+            }
+        }
+        def miss@(optional):StarterProfile
+        return miss
+    }
+
+    fn ids:[string] () {
+        def out:[string]
+        for list p:StarterProfile i {
+            push out p.id
+        }
+        return out
+    }
+
+    ; The profiles for the enabled surfaces, in canonical surface order. A surface
+    ; with no profile is left out and reported by the planner.
+    fn enabledFor:[StarterProfile] (cfg:StarterConfig) {
+        def out:[StarterProfile]
+        def ids:[string] (cfg.enabledSurfaceIds())
+        for ids sid:string i {
+            def hit@(optional):StarterProfile (this.find(sid))
+            if ((null? hit) == false) {
+                push out (unwrap hit)
+            }
+        }
+        return out
+    }
+
+    ; Enabled surfaces that have no profile yet.
+    fn missingFor:[string] (cfg:StarterConfig) {
+        def out:[string]
+        def ids:[string] (cfg.enabledSurfaceIds())
+        for ids sid:string i {
+            def hit@(optional):StarterProfile (this.find(sid))
+            if (null? hit) {
+                push out sid
+            }
+        }
+        return out
+    }
+}

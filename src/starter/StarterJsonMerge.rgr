@@ -1,0 +1,259 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterJsonMerge -- merging the tool's keys into somebody else's
+; `package.json`.
+;
+; `package.json` is not a generated file and must never be treated as one. It may
+; already hold a dependency, a script, an `exports` map, a `workspaces` array, a
+; lint configuration and four things npm has not invented yet. So:
+;
+;   * A key the tool sets is set -- added if absent, overwritten if different.
+;   * A key the tool does not mention is LEFT ALONE, at its position.
+;   * A key the tool set LAST TIME and does not set now is removed.
+;
+; The third is what makes turning a surface off work: disable `web` and
+; `web:dev`, `web:build` and the `vite` devDependency go away, while the
+; author's own `lint` script stays. It needs to know what the tool owned before,
+; which is what `.ranger/generated.json` records -- ownership is remembered, not
+; guessed from the shape of a value.
+;
+; WHY OWNERSHIP IS RECORDED PER CONTAINER rather than as dotted paths. A dotted
+; path is ambiguous here: npm script names carry colons (`web:dev`), package
+; names carry slashes and dots (`@scope/name`, `some.pkg`), and a path built by
+; joining them with a `.` cannot be split again. So ownership is an object keyed
+; by container -- `scripts`, `devDependencies`, `dependencies`, and `""` for the
+; top level -- whose values are plain key lists. No escaping, no ambiguity.
+
+Import "StarterJson.rgr"
+Import "StarterText.rgr"
+
+class JsonMergeResult {
+
+    def value:JsonValue
+    def text:string ""
+    def problem:string ""
+
+    def added:[string]
+    def changed:[string]
+    def removed:[string]
+
+    Constructor () {
+    }
+
+    fn ok:boolean () {
+        return ((strlen problem) == 0)
+    }
+
+    fn touched:boolean () {
+        if ((array_length added) > 0) {
+            return true
+        }
+        if ((array_length changed) > 0) {
+            return true
+        }
+        if ((array_length removed) > 0) {
+            return true
+        }
+        return false
+    }
+
+    fn summary:string () {
+        def parts:[string]
+        if ((array_length added) > 0) {
+            push parts ((to_string (array_length added)) + " added")
+        }
+        if ((array_length changed) > 0) {
+            push parts ((to_string (array_length changed)) + " changed")
+        }
+        if ((array_length removed) > 0) {
+            push parts ((to_string (array_length removed)) + " removed")
+        }
+        if ((array_length parts) == 0) {
+            return "no key changed"
+        }
+        return (StarterText.joinWith(parts ", "))
+    }
+}
+
+class StarterJsonMerge {
+
+    Constructor () {
+    }
+
+    ; The containers whose individual keys the tool tracks ownership of. A key
+    ; outside them -- `name`, `version`, `license` -- is tracked at the top level
+    ; under "".
+    sfn trackedContainers:[string] () {
+        def out:[string]
+        push out "scripts"
+        push out "dependencies"
+        push out "devDependencies"
+        return out
+    }
+
+    sfn sameValue:boolean (a:JsonValue b:JsonValue) {
+        return ((a.textAt(0)) == (b.textAt(0)))
+    }
+
+    ; What the tool owns in `desired`, in the form `.ranger/generated.json`
+    ; stores: an object of container -> key list, with "" for the top level.
+    sfn ownedKeys:JsonValue (desired:JsonValue) {
+        def out:JsonValue (JsonValue.newObject())
+        def containers:[string] (StarterJsonMerge.trackedContainers())
+        def top:[string]
+        for desired.order key:string i {
+            if (StarterText.includes(containers key)) {
+                def sub:JsonValue (desired.getObject(key))
+                out.putKey(key (JsonValue.fromStrings(sub.order)))
+            } {
+                push top key
+            }
+        }
+        out.putKey("" (JsonValue.fromStrings(top)))
+        return out
+    }
+
+    ; Merge `desired` into `existing`, dropping what `ownedBefore` says the tool
+    ; used to own and no longer does. `existing` is modified in place and also
+    ; answered, because the caller wants the text.
+    sfn merge:JsonMergeResult (existing:JsonValue desired:JsonValue ownedBefore:JsonValue) {
+        def result (new JsonMergeResult())
+        if ((existing.isObject()) == false) {
+            result.problem = "the file is not a JSON object, so there is nothing to merge into"
+            result.value = desired
+            result.text = (desired.asText())
+            return result
+        }
+        def containers:[string] (StarterJsonMerge.trackedContainers())
+
+        ; --- what the tool sets ---
+        for desired.order key:string i {
+            def wanted@(optional):JsonValue (desired.getKey(key))
+            if (null? wanted) {
+                continue
+            }
+            def want:JsonValue (unwrap wanted)
+            if (StarterText.includes(containers key)) {
+                StarterJsonMerge.mergeContainer(existing key want result)
+                continue
+            }
+            def had@(optional):JsonValue (existing.getKey(key))
+            if (null? had) {
+                existing.putKey(key want)
+                push result.added key
+            } {
+                def have:JsonValue (unwrap had)
+                if ((StarterJsonMerge.sameValue(have want)) == false) {
+                    existing.putKey(key want)
+                    push result.changed key
+                }
+            }
+        }
+
+        ; --- what the tool used to set and no longer does ---
+        StarterJsonMerge.dropStale(existing desired ownedBefore result)
+
+        result.value = existing
+        result.text = (existing.asText())
+        return result
+    }
+
+    ; One tracked container: merge key by key so that the author's own scripts
+    ; keep their positions and the tool's are added at the end.
+    sfn mergeContainer:void (existing:JsonValue key:string want:JsonValue result:JsonMergeResult) {
+        def had@(optional):JsonValue (existing.getKey(key))
+        if (null? had) {
+            existing.putKey(key want)
+            push result.added key
+            return
+        }
+        def have:JsonValue (unwrap had)
+        if ((have.isObject()) == false) {
+            ; `"scripts": "nonsense"` is not something to merge into. The tool's
+            ; value replaces it and the change is reported.
+            existing.putKey(key want)
+            push result.changed key
+            return
+        }
+        for want.order sub:string i {
+            def wantedSub@(optional):JsonValue (want.getKey(sub))
+            if (null? wantedSub) {
+                continue
+            }
+            def wantSub:JsonValue (unwrap wantedSub)
+            def hadSub@(optional):JsonValue (have.getKey(sub))
+            if (null? hadSub) {
+                have.putKey(sub wantSub)
+                push result.added (key + "." + sub)
+            } {
+                def haveSub:JsonValue (unwrap hadSub)
+                if ((StarterJsonMerge.sameValue(haveSub wantSub)) == false) {
+                    have.putKey(sub wantSub)
+                    push result.changed (key + "." + sub)
+                }
+            }
+        }
+    }
+
+    sfn dropStale:void (existing:JsonValue desired:JsonValue ownedBefore:JsonValue result:JsonMergeResult) {
+        if ((ownedBefore.isObject()) == false) {
+            return
+        }
+        for ownedBefore.order container:string i {
+            def names:[string] (ownedBefore.getStrings(container))
+            if ((strlen container) == 0) {
+                for names name:string j {
+                    if (desired.hasKey(name)) {
+                        continue
+                    }
+                    if (existing.hasKey(name)) {
+                        existing.dropKey(name)
+                        push result.removed name
+                    }
+                }
+                continue
+            }
+            def desiredContainer:JsonValue (desired.getObject(container))
+            def existingHolder@(optional):JsonValue (existing.getKey(container))
+            if (null? existingHolder) {
+                continue
+            }
+            def holder:JsonValue (unwrap existingHolder)
+            if ((holder.isObject()) == false) {
+                continue
+            }
+            for names name:string j {
+                if (desiredContainer.hasKey(name)) {
+                    continue
+                }
+                if (holder.hasKey(name)) {
+                    holder.dropKey(name)
+                    push result.removed (container + "." + name)
+                }
+            }
+            ; A container the tool introduced and has emptied goes away with its
+            ; last key, so a project that never had a `devDependencies` does not
+            ; keep an empty one forever.
+            if ((array_length holder.order) == 0) {
+                if ((desired.hasKey(container)) == false) {
+                    existing.dropKey(container)
+                    push result.removed container
+                }
+            }
+        }
+    }
+
+    ; Merge into the TEXT of an existing file, which is what the generator has.
+    sfn mergeText:JsonMergeResult (existingText:string desired:JsonValue ownedBefore:JsonValue) {
+        def parser (new StarterJson())
+        def existing:JsonValue (parser.parse(existingText))
+        if ((parser.ok()) == false) {
+            def result (new JsonMergeResult())
+            result.problem = ("the existing file is not valid JSON: " + parser.problem)
+            result.value = desired
+            result.text = existingText
+            return result
+        }
+        return (StarterJsonMerge.merge(existing desired ownedBefore))
+    }
+}
