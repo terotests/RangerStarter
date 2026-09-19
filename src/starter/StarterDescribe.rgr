@@ -134,9 +134,6 @@ class StarterDescribe {
 
     sfn notYet:string (sid:string) {
         switch sid {
-            case "server" {
-                return "not implemented yet: an HTTP service (PLAN_STARTER.md M8)"
-            }
             case "desktop" {
                 return "not implemented yet: SDL2 through C++ (PLAN_STARTER.md M9)"
             }

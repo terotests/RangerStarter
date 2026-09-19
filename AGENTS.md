@@ -59,7 +59,7 @@ ranger.project.json  ->  StarterConfig  ->  ProjectPlan  ->  FilePlan  ->  disk
 ```
 
 Everything left of the last arrow is pure -- no filesystem, no terminal, no
-process -- which is why `npm run starter:test` runs 425 checks over plans and
+process -- which is why `npm run starter:test` runs 437 checks over plans and
 merges without touching a disk, and why it runs on **three targets**:
 
 ```bash

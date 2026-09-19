@@ -58,7 +58,7 @@ dimensions:
 | Dimension | Values | Cardinality |
 | --- | --- | --- |
 | **Kind** | `application`, `library` | one |
-| **Surfaces** | `cli`, `web`, `server`, `desktop`, `android`, `ios` | many |
+| **Surfaces** | `cli`, `library`, `web`, `desktop`, `android`, `ios` | many |
 | **Targets** | the compiler's fourteen, per surface | many, constrained by the surface |
 
 So all of these are expressible, and none of them is a special case:
@@ -460,8 +460,10 @@ fourteen are written down in this repository.
 
 ## 10. The surfaces, one at a time
 
-Seven profiles. The first four need no toolchain beyond Node; the last three
-generate host shells that a platform toolchain builds.
+Six profiles. The first three need no toolchain beyond Node; the last three
+generate host shells that a platform toolchain builds. A seventh, `server`, is
+designed below and **not built** — see §20.11 for why it was withdrawn rather
+than shipped greyed out.
 
 ### 10.1 `cli` — command line
 
@@ -524,9 +526,14 @@ writes CommonJS and the Vite build fails in a way that reads like a Vite
 problem. That is exactly the kind of thing the generated `AGENTS.md` section
 must say out loud.
 
-### 10.4 `server` — a service
+### 10.4 `server` — a service (designed, withdrawn)
 
-Worth having in v1 because it is cheap: the compiler already has HTTP
+**Not in the tool.** This design stands, and the surface is not in the
+configuration's vocabulary: Ranger's `@(HttpServer)` support is not reviewed
+enough to make a generated project's default of it. §20.11 has the reasoning.
+What follows is what it becomes when that changes.
+
+Worth having because it is cheap: the compiler already has HTTP
 primitives (`http_get_method`, `http_send`, `sse_send` and the rest) and
 `lib/WebServerLib.rgr` is the face over them. Targets: `es6` and `go` to start.
 Generates a request handler, a health route, and a `server:dev` script. No HTTP
@@ -1032,13 +1039,13 @@ several of its details did not, and those are the interesting part.
 | `StarterDoctor.rgr` | the pure verdict for one check on one platform |
 | `StarterDescribe.rgr` | `describe --json`, from the registries |
 | `StarterWizard.rgr`, `StarterWizardView.rgr` | the pure state machine and the pure renderer |
-| `StarterTest.rgr` | 423 checks, no filesystem |
+| `StarterTest.rgr` | 437 checks, no filesystem |
 
 ### 20.2 What it is verified against
 
 Not "it compiles". The following were run:
 
-* **423 checks on three targets.** `npm run starter:test`, `:python` and `:go`
+* **437 checks on three targets.** `npm run starter:test`, `:python` and `:go`
   all pass, with the compiler `npm install` resolves today.
 * **Thirteen of fourteen targets compile** the core. Scala does not, for a
   reason that is not this code's -- see §20.5.
@@ -1321,19 +1328,39 @@ Every command takes `--json`, including the failures: a `--json` run that
 answered prose on error would leave an agent parsing sentences. Exit status is 0
 worked, 1 a problem with the project, 2 a problem with the command line.
 
-### 20.11 What is left
+### 20.11 The server surface, withdrawn
 
-The server surface. Enabling it is an error that names the milestone; the wizard
-shows it, greyed, with the same note.
+`server` is gone from the configuration's vocabulary -- not deferred behind a
+milestone note, removed. The wizard does not list it, `describe --json` does not
+mention it, and `ranger.project.json` no longer carries a block for it.
 
-**The server surface is blocked on a release, not on design.** Ranger's
-`@(HttpServer)` annotation with `@(GET "/path")` methods now works on es6 as well
-as Go -- that was Ranger ISSUES.md #93, fixed in this work: the es6 template
-emitted `server.start(port)`, a call to a method nothing generated, so every
-JavaScript HTTP server compiled cleanly and died on its first statement. The fix
-is a new writer class, so it cannot be hand-patched into the published
-`dist/rgrc.js`; a generated project uses the npm compiler, so the server profile
-has to wait for `npm run build:dist` and a release.
+The reason is not the starter's. Ranger's `@(HttpServer)` support is not
+reviewed enough to build a generated project's default on: ISSUES.md #93 -- the
+es6 template emitting `server.start(port)`, a call to a method nothing generated
+-- was found by trying to use it, and the fix is a NEW WRITER CLASS rather than
+a template tweak. A surface listed in the wizard is a promise that what it
+generates works; that promise cannot be made yet, and listing it greyed made the
+promise anyway, one release away.
+
+§10.4 keeps the design. When the compiler side has been reviewed, the surface
+comes back as a profile, which is one subclass and one line in `StarterProfiles`
+-- the whole point of the seam.
+
+**A configuration that still names it is an error, not silence.** Unknown keys
+are kept, so a file carrying `"server": { "enabled": true }` would otherwise
+generate a project quietly missing the surface it asked for -- the one failure
+this design exists to make impossible. `StarterConfig.unknownEnabledSurfaces`
+answers any enabled surface the vocabulary does not have, which catches a typo
+(`wep`) the same way. Switched off, the key is somebody's note to themselves and
+survives untouched.
+
+Withdrawing it left every remaining surface with a profile, so nothing is greyed
+any more. The machinery stays and is still tested -- against a hand-built
+registry with one profile held back, and against a synthetic unavailable option
+in the wizard and its renderer -- because it is what lets the next surface reach
+the vocabulary before its profile does.
+
+### 20.12 What is left
 
 The starter still does not document its own public API with `doc { … }` blocks,
 though a generated project's seed does and its `docs:check` enforces it.

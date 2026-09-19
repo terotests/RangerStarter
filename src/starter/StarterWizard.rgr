@@ -241,12 +241,11 @@ class StarterWizard {
         return q
     }
 
+    ; Every surface this build offers has a profile, so nothing is greyed today.
+    ; The machinery stays: it is what lets a surface be added to the
+    ; configuration's vocabulary before its profile exists, without the wizard
+    ; offering something `apply` would refuse.
     sfn notBuiltYet:string (sid:string) {
-        switch sid {
-            case "server" {
-                return "not built yet -- an HTTP service (M8)"
-            }
-        }
         return "not built yet"
     }
 

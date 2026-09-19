@@ -525,20 +525,53 @@ class StarterTest {
         t.eqStr("and the file is handed back untouched" merged.text broken)
     }
 
-    ; A surface with no profile is an error, not a silent omission.
-    sfn testMissingProfileIsAnError:void (t:StarterCheck) {
+    ; A surface this build has never heard of is an error, not a silent
+    ; omission. Unknown keys are KEPT in the file, so a typo -- or a surface an
+    ; older version offered and this one dropped, which is what happened to
+    ; `server` -- would otherwise generate a project quietly missing it.
+    sfn testUnknownSurfaceIsAnError:void (t:StarterCheck) {
         def cfg:StarterConfig (StarterTest.cliConfig())
         cfg.setEnabled("server" true)
         def project:ProjectPlan (StarterTest.projectFor(cfg))
-        t.isTrue("enabling a surface that is not built yet is an error" (project.hasErrors()))
-        def said:boolean false
-        for project.problems p:StarterProblem i {
-            if (p.path == "surfaces.server") {
-                said = true
+        t.isTrue("enabling a surface this version does not have is an error" (project.hasErrors()))
+        t.isTrue("and it names the surface" (StarterTest.problemAt(project "surfaces.server")))
+        t.eqInt("no files are planned from a configuration that cannot be met" (array_length project.files) 0)
+
+        ; Switched OFF, the same key is somebody's note to themselves and none of
+        ; the tool's business. It survives, and it is not an error.
+        def off:StarterConfig (StarterTest.cliConfig())
+        off.setEnabled("server" false)
+        def quiet:ProjectPlan (StarterTest.projectFor(off))
+        t.isFalse("a surface that is switched off is not a problem" (quiet.hasErrors()))
+        t.eqList("and nothing is reported about it" (off.unknownEnabledSurfaces()) "")
+
+        def typo:StarterConfig (StarterTest.cliConfig())
+        typo.setEnabled("wep" true)
+        t.eqList("a typo is caught the same way" (typo.unknownEnabledSurfaces()) "wep")
+    }
+
+    ; A surface that IS in the vocabulary but has no profile yet. Nothing is in
+    ; that state today -- every surface this build offers can be generated -- so
+    ; the registry is asked directly, with one profile held back. This is the
+    ; machinery that lets a surface be added to the configuration before its
+    ; profile exists without the tool offering something `apply` would refuse.
+    sfn testMissingProfileIsAnError:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("web" true)
+        cfg.setEnabled("cli" true)
+
+        def full:StarterProfiles (StarterProfiles.registry())
+        t.eqList("with every profile present, nothing is missing" (full.missingFor(cfg)) "")
+
+        def partial (new StarterProfiles())
+        def kept:[StarterProfile]
+        for partial.list p:StarterProfile i {
+            if (p.id != "web") {
+                push kept p
             }
         }
-        t.isTrue("and it names the surface" said)
-        t.eqInt("no files are planned from a configuration that cannot be met" (array_length project.files) 0)
+        partial.list = kept
+        t.eqList("hold one back and the enabled surface is named" (partial.missingFor(cfg)) "web")
     }
 
     sfn testValidation:void (t:StarterCheck) {
@@ -852,21 +885,48 @@ class StarterTest {
         t.isTrue("for a bad one too" ((strlen (StarterWizard.nameProblem("North Wind"))) > 0))
     }
 
-    sfn testWizardUnavailableSurface:void (t:StarterCheck) {
-        def w:StarterWizard (StarterTest.freshWizard())
-        StarterTest.press(w "d e m o return return")
-        ; cursor 0 is cli; the first surface with no profile in this build is
-        ; `server`, at 3.
-        StarterTest.press(w "down down down space")
-        def q:WizardQuestion (w.current())
-        t.eqStr("it is still the surfaces question" q.id "surfaces")
-        t.isTrue("and it says the surface is not built yet" (contains q.problem "not built yet"))
-        t.eqInt("nothing was ticked" (q.countPicked()) 0)
+    ; Every surface this build offers can be generated, so the wizard greys
+    ; nothing out today. The refusal is still tested, because it is what lets a
+    ; surface reach the configuration's vocabulary before its profile does.
+    sfn testWizardRefusesAnUnavailableOption:void (t:StarterCheck) {
+        def q (new WizardQuestion())
+        q.id = "surfaces"
+        q.kind = "multi"
+        q.minPicked = 1
+        push q.options (WizardOption.of("cli" "Command line" "an entry point"))
+        push q.options (WizardOption.unavailable("quantum" "Quantum" "not built yet -- no hardware"))
+
+        def w (new StarterWizard())
+        push w.questions q
+        StarterTest.press(w "down space")
+        t.isTrue("ticking one that is not built says so" (contains q.problem "not built yet"))
+        t.eqInt("and nothing is ticked" (q.countPicked()) 0)
 
         ; Pressing return with nothing picked does not advance either.
         StarterTest.press(w "return")
-        def stillSurfaces:WizardQuestion (w.current())
-        t.eqStr("and it will not continue with nothing chosen" stillSurfaces.id "surfaces")
+        t.isFalse("it will not continue with nothing chosen" w.done)
+
+        StarterTest.press(w "up space")
+        t.eqInt("the one that IS built ticks" (q.countPicked()) 1)
+        t.eqList("and it is the right one" (q.pickedIds()) "cli")
+    }
+
+    ; And no surface is in that state: the wizard offers six, all selectable.
+    sfn testWizardOffersEverySurface:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the surfaces question is asked" q.id "surfaces")
+        def ids:[string]
+        def greyed:[string]
+        for q.options o:WizardOption i {
+            push ids o.id
+            if ((o.available) == false) {
+                push greyed o.id
+            }
+        }
+        t.eqList("it offers what the configuration has" ids "cli,library,web,desktop,android,ios")
+        t.eqList("and none of them is greyed" greyed "")
     }
 
     ; --- what an agent reads --------------------------------------------------
@@ -925,8 +985,10 @@ class StarterTest {
         t.isTrue("both mobile surfaces describe their devices" (sawAndroidDevices && sawIosDevices))
 
         t.eqList("the surfaces this build generates" available "cli,library,web,desktop,android,ios")
-        t.eqList("and the ones it does not" unavailable "server")
-        t.eqInt("all seven are described either way" ((array_length available) + (array_length unavailable)) 7)
+        ; Every surface this build offers has a profile, so `describe` claims
+        ; nothing `apply` would refuse -- which is the property, not the count.
+        t.eqList("and there is nothing it offers but cannot build" unavailable "")
+        t.eqInt("all six are described either way" ((array_length available) + (array_length unavailable)) 6)
 
         ; The target list carries the one fact that breaks a generated command
         ; when an agent gets it wrong.
@@ -1610,8 +1672,8 @@ class StarterTest {
     sfn testWizardAsksForDevices:void (t:StarterCheck) {
         def w:StarterWizard (StarterTest.freshWizard())
         StarterTest.press(w "d e m o return return")
-        ; cli 0, library 1, web 2, server 3, desktop 4, android 5, ios 6.
-        StarterTest.press(w "down down down down down space down space return")
+        ; cli 0, library 1, web 2, desktop 3, android 4, ios 5.
+        StarterTest.press(w "down down down down space down space return")
         def q1:WizardQuestion (w.current())
         t.eqStr("android's targets come first" q1.id "targets:android")
         StarterTest.press(w "return")
@@ -1646,7 +1708,7 @@ class StarterTest {
     sfn testWizardRefusesNoDevice:void (t:StarterCheck) {
         def w:StarterWizard (StarterTest.freshWizard())
         StarterTest.press(w "d e m o return return")
-        StarterTest.press(w "down down down down down space return")
+        StarterTest.press(w "down down down down space return")
         StarterTest.press(w "return")
         def q:WizardQuestion (w.current())
         t.eqStr("the devices question is asked" q.id "devices:android")
@@ -1716,10 +1778,33 @@ class StarterTest {
 
         StarterTest.press(w "d e m o return return")
         def surfaces:string (StarterText.joinWith((view.render(w)) "\n"))
-        t.isTrue("an unavailable surface is shown, not hidden" (contains surfaces "Android"))
-        t.isTrue("with the reason" (contains surfaces "not built yet"))
+        t.isTrue("every surface is listed" (contains surfaces "Android"))
+        t.isTrue("with what it generates" (contains surfaces "Compose"))
         t.isTrue("an empty checkbox" (contains surfaces "[ ] Library"))
         t.isTrue("and a cursor" (contains surfaces "▸"))
+    }
+
+    ; Nothing is greyed today, so the renderer is shown one that is. Hiding an
+    ; unavailable surface would hide the plan; drawing it as selectable would
+    ; let somebody build a configuration that fails to apply. It is drawn, with
+    ; a dash where the checkbox goes and the reason beside it.
+    sfn testWizardViewGreysAnUnavailableRow:void (t:StarterCheck) {
+        def q (new WizardQuestion())
+        q.id = "surfaces"
+        q.kind = "multi"
+        q.title = "Where should it run?"
+        q.minPicked = 1
+        push q.options (WizardOption.of("cli" "Command line" "an entry point"))
+        push q.options (WizardOption.unavailable("quantum" "Quantum" "not built yet -- no hardware"))
+
+        def w (new StarterWizard())
+        push w.questions q
+        def view (new StarterWizardView())
+        def text:string (StarterText.joinWith((view.render(w)) "\n"))
+        t.isTrue("the unavailable row is shown, not hidden" (contains text "Quantum"))
+        t.isTrue("with the reason" (contains text "not built yet"))
+        t.isTrue("and no checkbox to tick" (contains text "–  Quantum"))
+        t.isTrue("beside one that can be" (contains text "[ ] Command line"))
     }
 
     sfn commandOf:string (project:ProjectPlan name:string) {
@@ -1799,6 +1884,7 @@ class StarterTest {
         StarterTest.testFingerprint(t)
         StarterTest.testValidation(t)
         StarterTest.testMissingProfileIsAnError(t)
+        StarterTest.testUnknownSurfaceIsAnError(t)
         StarterTest.testScripts(t)
         StarterTest.testWrapperTableFollowsTargets(t)
         StarterTest.testPlanGolden(t)
@@ -1832,7 +1918,8 @@ class StarterTest {
         StarterTest.testMobileSurfacesShareOneModule(t)
         StarterTest.testWizardWalk(t)
         StarterTest.testWizardRefusesABadName(t)
-        StarterTest.testWizardUnavailableSurface(t)
+        StarterTest.testWizardRefusesAnUnavailableOption(t)
+        StarterTest.testWizardOffersEverySurface(t)
         StarterTest.testWizardSkipsIrrelevantQuestions(t)
         StarterTest.testWizardAsksForDevices(t)
         StarterTest.testWizardRefusesNoDevice(t)
@@ -1840,6 +1927,7 @@ class StarterTest {
         StarterTest.testWizardBackAndCancel(t)
         StarterTest.testWizardStepCounter(t)
         StarterTest.testWizardView(t)
+        StarterTest.testWizardViewGreysAnUnavailableRow(t)
         t.report("the starter core")
     }
 }

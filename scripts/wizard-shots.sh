@@ -4,16 +4,6 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-# The frame set is regenerated whole, so a renamed step cannot leave a ghost
-# frame behind that nothing produces any more and the documentation still links.
-# `clean.py` removes only the frames these two walks name -- a blanket
-# `rm docs/wizard/*.png` would also delete the SDL2 window shot, which lives in
-# the same directory and is taken by `scripts/desktop-shot.sh`.
-for script in script.json script-mobile.json; do
-    python3 "$here/scripts/wizard-shots/clean.py" \
-        "$here/scripts/wizard-shots/$script" "$here/docs/wizard"
-done
-
 # Two walks, each in its own empty directory: a command line project, and the
 # two mobile surfaces -- which are the only ones with a device question, and the
 # only place the shared-module answer is visible.
@@ -25,3 +15,10 @@ for script in script.json script-mobile.json; do
         "$here/bin/ranger-starter.js"
 done
 python3 "$here/scripts/wizard-shots/render.py" "$here/docs/wizard" "$here/docs/wizard"
+
+# A frame this harness used to produce and no longer does -- a step that was
+# renamed -- is swept away here, against a manifest of what it owns. Pictures it
+# never took are left alone: the SDL2 window shot lives in this directory too.
+python3 "$here/scripts/wizard-shots/sweep.py" "$here/docs/wizard" \
+    "$here/scripts/wizard-shots/script.json" \
+    "$here/scripts/wizard-shots/script-mobile.json"

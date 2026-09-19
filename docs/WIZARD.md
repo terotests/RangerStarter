@@ -53,12 +53,14 @@ independent dimensions, and the configuration stores them that way.
 
 ![the surfaces screen](wizard/03-surfaces.png)
 
-Pick as many as apply. One of the seven is not built yet — and it is **shown**,
-with the milestone that will bring it, rather than hidden. Hiding it would hide
-the plan; offering it as selectable would let you build a configuration that
-fails to apply. So it is visible and refuses to be ticked:
+Pick as many as apply. All six generate — the wizard never offers a surface
+`apply` would refuse, because the list comes from the profile registry rather
+than a hand-kept table. A surface can still reach `ranger.project.json`'s
+vocabulary before its profile exists; the wizard then draws it with a dash where
+the checkbox goes and the reason beside it, and refuses to tick it. Nothing is
+in that state today.
 
-![an unavailable surface says why](wizard/04-unavailable.png)
+![a surface picked](wizard/04-surfaces-picked.png)
 
 ---
 

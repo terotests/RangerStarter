@@ -107,12 +107,22 @@ class StarterPlanner {
             plan.addProblem((StarterProblem.about("surfaces" "nothing is enabled, so there is nothing to generate. Enable at least one surface.")))
         }
 
+        ; A surface the file switches on that this build has never heard of. A
+        ; typo, or a surface this version dropped -- `server` was offered as a
+        ; slot for a while and is not any more. Unknown keys are KEPT, so
+        ; without this the file would ask for something and get silence.
+        def unknown:[string] (cfg.unknownEnabledSurfaces())
+        for unknown sid:string i {
+            def names:string (StarterText.joinWith((StarterConfig.surfaceIds()) ", "))
+            plan.addProblem((StarterProblem.about(("surfaces." + sid) ("`" + sid + "` is not a surface this version of ranger-starter has. It generates " + names + ". Your answer is kept in the file; switch it off, or correct the name, to generate the rest."))))
+        }
+
         ; An enabled surface with no profile is an honest error. The alternative --
         ; generating everything except that surface and saying nothing -- produces
         ; a project that is quietly not what was asked for.
         def missing:[string] (profiles.missingFor(cfg))
         for missing sid:string i {
-            def why:string ("the " + (StarterConfig.surfaceTitle(sid)) + " surface is not implemented yet. The configuration keeps your answer; disable it to generate the rest. See PLAN_STARTER.md, milestones M8 and M9.")
+            def why:string ("the " + (StarterConfig.surfaceTitle(sid)) + " surface is not implemented yet. The configuration keeps your answer; disable it to generate the rest.")
             plan.addProblem((StarterProblem.about(("surfaces." + sid) why)))
         }
     }

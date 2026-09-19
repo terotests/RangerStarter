@@ -6,15 +6,12 @@
   Pick as many as apply. These are independent of each other and of the
   kind.
 
-    [x] Command line            an entry point and a way to run it
+  ▸ [x] Command line            an entry point and a way to run it
     [ ] Library                 a manifest for each ecosystem that ha…
     [ ] Web                     a page, and a Ranger ES module it imp…
-  ▸  –  Server                  not built yet -- an HTTP service (M8)
     [ ] Desktop (SDL2)          an SDL2 window over a module compiled…
     [ ] Android                 a Kotlin module inside a Compose shell
     [ ] iOS                     a Swift module inside a SwiftUI shell…
-
-  ×  Server is not built yet -- an HTTP service (M8)
 
   ────────────────────────────────────────────────────────────────────────
   ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

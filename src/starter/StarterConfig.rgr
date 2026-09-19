@@ -105,7 +105,6 @@ class StarterConfig {
         push out "cli"
         push out "library"
         push out "web"
-        push out "server"
         push out "desktop"
         push out "android"
         push out "ios"
@@ -122,9 +121,6 @@ class StarterConfig {
             }
             case "web" {
                 return "Web"
-            }
-            case "server" {
-                return "Server"
             }
             case "desktop" {
                 return "Desktop (SDL2)"
@@ -215,9 +211,6 @@ class StarterConfig {
                 ; compiling a program with a `main` for the browser would run it on
                 ; page load. A web module has no `main`.
                 s.putKey("entry" (JsonValue.fromText("src/Web.rgr")))
-            }
-            case "server" {
-                s.putKey("target" (JsonValue.fromText("es6")))
             }
             case "desktop" {
                 s.putKey("target" (JsonValue.fromText("cpp")))
@@ -361,6 +354,30 @@ class StarterConfig {
     fn isEnabled:boolean (id:string) {
         def s:JsonValue (this.surfaceOf(id))
         return (s.getBool("enabled" false))
+    }
+
+    ; Surfaces the file switches on that this tool has no idea about: a typo
+    ; (`wep`), or a surface a later version adds and this one does not have --
+    ; or one an earlier version offered and this one dropped.
+    ;
+    ; It matters because the file is the source of truth and unknown keys are
+    ; KEPT. Without this, `"wep": { "enabled": true }` generates a project with
+    ; no web surface and says nothing at all, which is the one failure this
+    ; design is supposed to make impossible.
+    fn unknownEnabledSurfaces:[string] () {
+        def out:[string]
+        def known:[string] (StarterConfig.surfaceIds())
+        def all:JsonValue (this.surfaces())
+        for all.order id:string i {
+            if (StarterText.includes(known id)) {
+                continue
+            }
+            def s:JsonValue (all.getObject(id))
+            if (s.getBool("enabled" false)) {
+                push out id
+            }
+        }
+        return out
     }
 
     ; The enabled surfaces, in canonical order rather than file order.
