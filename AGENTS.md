@@ -76,6 +76,7 @@ npm run starter:targets        # compiles the core to every target
 | `npm run starter:frames` | the wizard's screens, drawn from a scripted key sequence |
 | `npm run wizard:shots` | regenerate the screenshots in `docs/WIZARD.md` |
 | `npm run desktop:shot` | a picture of the window the desktop surface generates, taken with no display |
+| `npm run android:shot` | a generated Android project, rendered with Paparazzi (or an emulator when `RANGER_ANDROID_SHOT=emulator`) |
 | `node bin/ranger-starter.js help` | the commands |
 
 The questionnaire is [`docs/WIZARD.md`](docs/WIZARD.md), screen by screen. Its

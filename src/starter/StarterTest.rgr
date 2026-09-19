@@ -1411,6 +1411,13 @@ class StarterTest {
             t.eqInt("a phone build keeps the low minimum" (StarterText.firstNumber((StarterTest.lineWith(g.contents "minSdk =")))) 24)
         }
 
+        def gradleProps@(optional):PlanFile (project.fileAt("platforms/android/gradle.properties"))
+        t.isTrue("gradle.properties is written" ((null? gradleProps) == false))
+        if ((null? gradleProps) == false) {
+            def gp:PlanFile (unwrap gradleProps)
+            t.isTrue("with AndroidX enabled for Compose" (contains gp.contents "android.useAndroidX=true"))
+        }
+
         t.isTrue("the compiled kotlin is gitignored" (StarterText.includes(project.ignores "platforms/android/app/src/main/generated/")))
         t.isTrue("and so is gradle's own output" (StarterText.includes(project.ignores "platforms/android/app/build/")))
 

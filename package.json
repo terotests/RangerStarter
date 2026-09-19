@@ -32,7 +32,8 @@
     "starter:frames": "scripts/rgr run src/starter/StarterWizardFrames.rgr",
     "prepare": "npm run starter:build",
     "wizard:shots": "scripts/wizard-shots.sh",
-    "desktop:shot": "scripts/desktop-shot.sh"
+    "desktop:shot": "scripts/desktop-shot.sh",
+    "android:shot": "scripts/android-shot.sh"
   },
   "devDependencies": {
     "ranger-compiler": "^3.5.1"
