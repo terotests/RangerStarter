@@ -1432,6 +1432,14 @@ class StarterTest {
             t.isFalse("they are generated" wp.isSeed)
             t.isTrue("and pin Gradle 8.9, which AGP 8.7.3 wants" (contains wp.contents "gradle-8.9-bin.zip"))
         }
+        ; Compose is AndroidX. Without the flag, assembleDebug fails at
+        ; checkDebugAarMetadata after the wrapper has already started.
+        def gradleProps@(optional):PlanFile (project.fileAt("platforms/android/gradle.properties"))
+        t.isTrue("gradle.properties is planned" ((null? gradleProps) == false))
+        if ((null? gradleProps) == false) {
+            def gp:PlanFile (unwrap gradleProps)
+            t.isTrue("and enables AndroidX" (contains gp.contents "android.useAndroidX=true"))
+        }
         def launcher@(optional):PlanFile (project.fileAt("scripts/android-gradle.js"))
         t.isTrue("the launcher is planned" ((null? launcher) == false))
         if ((null? launcher) == false) {
