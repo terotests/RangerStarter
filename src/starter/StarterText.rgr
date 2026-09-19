@@ -288,6 +288,55 @@ class StarterText {
         return ""
     }
 
+    ; The line of a `--version` answer that is actually the version.
+    ;
+    ; `firstLine` is not enough. `gradle --version` prints a blank line, then a
+    ; rule of dashes, then `Gradle 8.14.3`; a JVM with `JAVA_TOOL_OPTIONS` set
+    ; prints a notice first. So: the first line carrying a digit, and carrying
+    ; something other than punctuation -- which is `v22.22.2`, `openjdk 21.0.10`
+    ; and `Gradle 8.14.3`, and is not `------------`.
+    ;
+    ; It falls back to `firstLine` so a program whose version has no digit in it
+    ; is still reported rather than read as absent.
+    sfn versionLine:string (text:string) {
+        def lines:[string] (StarterText.lines(text))
+        for lines line:string i {
+            def t:string (trim line)
+            if ((strlen t) == 0) {
+                continue
+            }
+            def hasDigit:boolean false
+            def hasWord:boolean false
+            def cnt:int (strlen t)
+            def j:int 0
+            while (j < cnt) {
+                def c:int (charAt t j)
+                if (c >= 48) {
+                    if (c <= 57) {
+                        hasDigit = true
+                    }
+                }
+                if (c >= 65) {
+                    if (c <= 90) {
+                        hasWord = true
+                    }
+                }
+                if (c >= 97) {
+                    if (c <= 122) {
+                        hasWord = true
+                    }
+                }
+                j = j + 1
+            }
+            if (hasDigit) {
+                if (hasWord) {
+                    return t
+                }
+            }
+        }
+        return (StarterText.firstLine(text))
+    }
+
     sfn repeated:string (unit:string times:int) {
         def out:string ""
         def i:int 0

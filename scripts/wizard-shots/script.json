@@ -1,46 +1,24 @@
 [
-  {
-    "name": "01-name-typed",
-    "keys": "n o r t h w i n d"
-  },
-  {
-    "name": "02-kind",
-    "keys": "return"
-  },
-  {
-    "name": "03-surfaces",
-    "keys": "return"
-  },
-  {
-    "name": "04-unavailable",
-    "keys": "space down down down space"
-  },
-  {
-    "name": "05-targets",
-    "keys": "up up up return"
-  },
-  {
-    "name": "06-targets-picked",
-    "keys": "space down space"
-  },
-  {
-    "name": "07-docs",
-    "keys": "return"
-  },
-  {
-    "name": "08-agents",
-    "keys": "down down return"
-  },
-  {
-    "name": "09-ci",
-    "keys": "down return"
-  },
-  {
-    "name": "10-review",
-    "keys": "return"
-  },
-  {
-    "name": "11-generated",
-    "keys": "return"
-  }
+  { "name": "01-name-typed",     "keys": "n o r t h w i n d",
+    "expect": ["What is the project called?", "northwind"] },
+  { "name": "02-kind",           "keys": "return",
+    "expect": ["application", "library"] },
+  { "name": "03-surfaces",       "keys": "return",
+    "expect": ["Where should it run?", "[ ] Command line"] },
+  { "name": "04-unavailable",    "keys": "space down down down space",
+    "expect": ["[x] Command line", "Server is not built yet"] },
+  { "name": "05-targets",        "keys": "up up up return",
+    "expect": ["Command line: which languages?", "[ ] JavaScript (ES6)"] },
+  { "name": "06-targets-picked", "keys": "space down space",
+    "expect": ["[x] JavaScript (ES6)", "[x] Go"] },
+  { "name": "07-docs",           "keys": "return",
+    "expect": ["API documentation"] },
+  { "name": "08-agents",         "keys": "down down return",
+    "expect": ["coding agents"] },
+  { "name": "09-ci",             "keys": "down return",
+    "expect": ["GitHub Actions"] },
+  { "name": "10-review",         "keys": "return",
+    "expect": ["Ready?", "Command line", "es6, go"] },
+  { "name": "11-generated",      "keys": "return",
+    "expect": ["wrote ranger.project.json", "src/Main.rgr", "AGENTS.md"] }
 ]

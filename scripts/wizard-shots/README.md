@@ -21,3 +21,10 @@ test that fails.
 Requirements: `python3`, `Pillow`, and Chromium at the path `render.py` names.
 Neither script is needed to build or use the starter; they only rebuild the
 documentation.
+
+## One kind of key per step
+
+A step whose keys are `return space` loses the `space`, or -- worse -- applies it
+to the question the `return` just opened and silently unticks a default. Both
+walks keep each step to one kind of action: advance, or toggle, never both. A
+frame that shows a default unticked is this mistake, not the wizard's behaviour.

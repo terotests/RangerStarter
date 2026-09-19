@@ -59,7 +59,7 @@ ranger.project.json  ->  StarterConfig  ->  ProjectPlan  ->  FilePlan  ->  disk
 ```
 
 Everything left of the last arrow is pure -- no filesystem, no terminal, no
-process -- which is why `npm run starter:test` runs 140 checks over plans and
+process -- which is why `npm run starter:test` runs 369 checks over plans and
 merges without touching a disk, and why it runs on **three targets**:
 
 ```bash
@@ -96,6 +96,19 @@ node bin/ranger-starter.js plan --json      # the actions apply will perform
 node bin/ranger-starter.js apply --json
 node bin/ranger-starter.js doctor --json    # what this machine is missing
 ```
+
+Android and iOS also take `--devices`. `describe --json` carries each surface's
+vocabulary and the default that applies when the flag names none, so there is
+nothing to guess:
+
+```bash
+node bin/ranger-starter.js init --name demo --surfaces android,ios \
+    --devices phone,tablet,iphone --json
+```
+
+The two vocabularies do not overlap — Android has `phone`, iOS has `iphone` — so
+one list is routed to whichever surfaces know each name. A name nobody knows is
+an error, not a silent default.
 
 Every command takes `--json`, **including the failures** — a `--json` run that
 answered prose on error would leave an agent parsing sentences, which is the

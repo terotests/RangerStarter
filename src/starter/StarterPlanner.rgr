@@ -112,7 +112,7 @@ class StarterPlanner {
         ; a project that is quietly not what was asked for.
         def missing:[string] (profiles.missingFor(cfg))
         for missing sid:string i {
-            def why:string ("the " + (StarterConfig.surfaceTitle(sid)) + " surface is not implemented yet. The configuration keeps your answer; disable it to generate the rest. See PLAN_STARTER.md, milestones M8 to M11.")
+            def why:string ("the " + (StarterConfig.surfaceTitle(sid)) + " surface is not implemented yet. The configuration keeps your answer; disable it to generate the rest. See PLAN_STARTER.md, milestones M8 and M9.")
             plan.addProblem((StarterProblem.about(("surfaces." + sid) why)))
         }
     }
@@ -165,15 +165,20 @@ class StarterPlanner {
     ; The entry point `ranger.json` names, and the one a core script falls back
     ; to. A project without a command line surface has no `src/Main.rgr`, so
     ; naming one would put a path in `ranger.json` that is not there.
+    ; The one entry `npm test` type-checks and the API doc build reads. Asked of
+    ; the enabled profiles in registration order rather than decided here, so a
+    ; new surface does not need a line in this function -- which is how a
+    ; mobile-only project came to check `src/Main.rgr`, a file it never generates.
     sfn entryOf:string (cfg:StarterConfig) {
         if (cfg.isLibrary()) {
             return ("src/" + (StarterText.pascalCase((cfg.projectName()))) + ".rgr")
         }
-        if (cfg.isEnabled("cli")) {
-            return (cfg.optionOf("cli" "entry" "src/Main.rgr"))
-        }
-        if (cfg.isEnabled("web")) {
-            return (cfg.optionOf("web" "entry" "src/Web.rgr"))
+        def profiles:StarterProfiles (StarterProfiles.registry())
+        for (profiles.enabledFor(cfg)) profile:StarterProfile i {
+            def entry:string (profile.entryOf(cfg))
+            if ((strlen entry) > 0) {
+                return entry
+            }
         }
         return (cfg.optionOf("cli" "entry" "src/Main.rgr"))
     }
@@ -208,6 +213,23 @@ class StarterPlanner {
         if (hasStart == false) {
             if (cfg.isEnabled("web")) {
                 plan.addScript((PlanScript.entry("start" "npm run web:dev" "core")))
+                hasStart = true
+            }
+        }
+        ; A mobile-only project cannot be started by node, but `npm start` still
+        ; has to do the nearest useful thing rather than answer "missing script".
+        ; Android installs on a device or emulator, which is as close to "run it"
+        ; as a command line gets; iOS builds the bundle, because nothing here
+        ; launches a simulator.
+        if (hasStart == false) {
+            if (cfg.isEnabled("android")) {
+                plan.addScript((PlanScript.entry("start" "npm run android:install" "core")))
+                hasStart = true
+            }
+        }
+        if (hasStart == false) {
+            if (cfg.isEnabled("ios")) {
+                plan.addScript((PlanScript.entry("start" "npm run ios:build" "core")))
                 hasStart = true
             }
         }

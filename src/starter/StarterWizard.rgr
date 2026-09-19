@@ -173,8 +173,16 @@ class StarterWizard {
         ; time when its surface is not chosen, rather than being rebuilt on every
         ; keystroke -- a question that comes and goes loses the answer somebody
         ; already gave it.
+        ; A target question, and for a surface with a device notion a device
+        ; question straight after it, per profile that has one. Both are skipped
+        ; at run time when the surface is not chosen, rather than being rebuilt on
+        ; every keystroke -- a question that comes and goes loses the answer
+        ; somebody already gave it.
         for w.profiles.list p:StarterProfile i {
             push w.questions (StarterWizard.targetsQuestion(cfg targets p))
+            if ((array_length (p.devicesKnown())) > 0) {
+                push w.questions (StarterWizard.devicesQuestion(cfg p))
+            }
         }
 
         push w.questions (StarterWizard.docsQuestion(cfg))
@@ -235,20 +243,11 @@ class StarterWizard {
 
     sfn notBuiltYet:string (sid:string) {
         switch sid {
-            case "web" {
-                return "not built yet -- Vite over a Ranger ES module (M8)"
-            }
             case "server" {
                 return "not built yet -- an HTTP service (M8)"
             }
             case "desktop" {
                 return "not built yet -- SDL2 through C++ (M9)"
-            }
-            case "android" {
-                return "not built yet -- a Kotlin module in a Compose shell (M10)"
-            }
-            case "ios" {
-                return "not built yet -- a Swift module over lib/apple (M11)"
             }
         }
         return "not built yet"
@@ -264,6 +263,12 @@ class StarterWizard {
             }
             case "web" {
                 return "a page, and a Ranger ES module it imports, served by Vite"
+            }
+            case "android" {
+                return "a Kotlin module inside a Compose shell"
+            }
+            case "ios" {
+                return "a Swift module inside a SwiftUI shell, built without Xcode"
             }
         }
         return ""
@@ -291,6 +296,36 @@ class StarterWizard {
             }
             def o:WizardOption (WizardOption.of(t.id label (StarterWizard.targetHint(t))))
             o.picked = (StarterText.includes(already t.id))
+            push q.options o
+        }
+        return q
+    }
+
+    ; Which devices one app is for. NOT separate builds: on Android these change
+    ; the minimum SDK, the manifest and the dependencies of a single APK, and on
+    ; iOS they are one number list in Info.plist. Built from the profile's own
+    ; vocabulary, so a surface that gains a device type gains a checkbox without
+    ; anything here changing.
+    sfn devicesQuestion:WizardQuestion (cfg:StarterConfig profile:StarterProfile) {
+        def q (new WizardQuestion())
+        q.id = ("devices:" + profile.id)
+        q.kind = "multi"
+        q.dependsOnSurface = profile.id
+        q.title = ((profile.title()) + ": which devices?")
+        q.help = "One app, not one build each. These change the manifest, the minimum version and what the store says the app runs on."
+        q.minPicked = 1
+        def already:[string] (cfg.devicesOf(profile.id))
+        def fallback:[string] (profile.devicesDefault())
+        for (profile.devicesKnown()) d:string i {
+            def o:WizardOption (WizardOption.of(d (profile.deviceLabel(d)) (profile.deviceHint(d))))
+            if ((array_length already) > 0) {
+                o.picked = (StarterText.includes(already d))
+            } {
+                ; A configuration being re-opened keeps its answer; a fresh one
+                ; starts on the profile's default, so the question can be
+                ; confirmed without reading it.
+                o.picked = (StarterText.includes(fallback d))
+            }
             push q.options o
         }
         return q
@@ -687,6 +722,11 @@ class StarterWizard {
             if ((null? tq) == false) {
                 def q:WizardQuestion (unwrap tq)
                 cfg.setTargets(sid (q.pickedIds()))
+            }
+            def dq@(optional):WizardQuestion (this.questionById(("devices:" + sid)))
+            if ((null? dq) == false) {
+                def d:WizardQuestion (unwrap dq)
+                cfg.setDevices(sid (d.pickedIds()))
             }
         }
 

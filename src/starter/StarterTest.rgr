@@ -901,8 +901,31 @@ class StarterTest {
                 t.isTrue(("an unavailable surface says why: " + sid) ((strlen (sf.getText("why" ""))) > 0))
             }
         }
-        t.eqList("the surfaces this build generates" available "cli,library,web")
-        t.eqList("and the ones it does not" unavailable "server,desktop,android,ios")
+        ; The `--devices` vocabulary has to be discoverable, or an agent guesses
+        ; `tablets` for `tablet` and gets a JSON error instead of a default.
+        def sawAndroidDevices:boolean false
+        def sawIosDevices:boolean false
+        for surfaces.items sf2:JsonValue i {
+            def sid2:string (sf2.getText("id" ""))
+            if (sid2 == "android") {
+                sawAndroidDevices = true
+                t.eqList("android's device types are described" (sf2.getStrings("devices")) "phone,tablet,tv,wear")
+                t.eqList("with a default that needs no answer" (sf2.getStrings("devicesDefault")) "phone")
+            }
+            if (sid2 == "ios") {
+                sawIosDevices = true
+                t.eqList("and ios's device families" (sf2.getStrings("devices")) "iphone,ipad")
+            }
+            if (sid2 == "cli") {
+                ; A surface with no device notion says nothing about devices at
+                ; all, rather than an empty list an agent would have to interpret.
+                t.eqInt("a surface without devices lists none" (array_length (sf2.getStrings("devices"))) 0)
+            }
+        }
+        t.isTrue("both mobile surfaces describe their devices" (sawAndroidDevices && sawIosDevices))
+
+        t.eqList("the surfaces this build generates" available "cli,library,web,android,ios")
+        t.eqList("and the ones it does not" unavailable "server,desktop")
         t.eqInt("all seven are described either way" ((array_length available) + (array_length unavailable)) 7)
 
         ; The target list carries the one fact that breaks a generated command
@@ -1033,6 +1056,335 @@ class StarterTest {
         t.isTrue("and only vite is known" (p2.hasErrors()))
     }
 
+    ; --- the two mobile surfaces ----------------------------------------------
+
+    ; Both are one Ranger module compiled twice, so the tests are mostly about
+    ; the things that do not fail the Ranger compile and fail much later: the
+    ; Kotlin package, the Swift host's struct name, and the `--` that decides
+    ; whether an argument reaches the program or the compiler.
+
+    ; The one line of a generated file a test cares about, so an assertion about
+    ; `minSdk` does not depend on every other number in the file.
+    sfn lineWith:string (text:string needle:string) {
+        for (StarterText.lines(text)) line:string i {
+            if (contains line needle) {
+                return line
+            }
+        }
+        return ""
+    }
+
+    sfn problemAt:boolean (project:ProjectPlan path:string) {
+        for project.problems p:StarterProblem i {
+            if (p.path == path) {
+                return true
+            }
+        }
+        return false
+    }
+
+    sfn androidConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("android" true)
+        def ds:[string]
+        push ds "phone"
+        cfg.setDevices("android" ds)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn iosConfig:StarterConfig () {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("ios" true)
+        def ds:[string]
+        push ds "iphone"
+        push ds "ipad"
+        cfg.setDevices("ios" ds)
+        cfg.setAgents(true true "auto")
+        return cfg
+    }
+
+    sfn testAndroidSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.androidConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("an android-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "android:build,android:compile,android:install,doctor,plan,setup,start,test")
+
+        ; THE ONE THING THAT MUST AGREE. A mismatch between `-ktpackage` and the
+        ; host's `package` declaration compiles fine and fails in Gradle, as an
+        ; unresolved reference to a class that is right there in the source set.
+        def compile:string (StarterTest.commandOf(project "android:compile"))
+        t.isTrue("the kotlin package is passed to the compiler" (contains compile "-ktpackage=com.example.northwind"))
+        t.isTrue("after `--`, because it is a compiler flag" (contains compile "-- -ktpackage="))
+        t.isTrue("and the output goes into the app's source set" (contains compile "-d=platforms/android/app/src/main/generated"))
+
+        def activity@(optional):PlanFile (project.fileAt("platforms/android/app/src/main/kotlin/com/example/northwind/MainActivity.kt"))
+        t.isTrue("the host activity is planned under the package path" ((null? activity) == false))
+        if ((null? activity) == false) {
+            def act:PlanFile (unwrap activity)
+            t.isTrue("as a seed, because the app is the author's" act.isSeed)
+            t.isTrue("declaring the same package" (contains act.contents "package com.example.northwind"))
+            t.isTrue("and using the shared module" (contains act.contents "Shared()"))
+        }
+
+        def gradle@(optional):PlanFile (project.fileAt("platforms/android/app/build.gradle.kts"))
+        t.isTrue("an app build file is written" ((null? gradle) == false))
+        if ((null? gradle) == false) {
+            def g:PlanFile (unwrap gradle)
+            t.isFalse("it is generated, not a seed" g.isSeed)
+            t.isTrue("with the package as the namespace" (contains g.contents "namespace = \"com.example.northwind\""))
+            t.isTrue("and the generated source set added" (contains g.contents "src/main/generated"))
+            t.eqInt("a phone build keeps the low minimum" (StarterText.firstNumber((StarterTest.lineWith(g.contents "minSdk =")))) 24)
+        }
+
+        t.isTrue("the compiled kotlin is gitignored" (StarterText.includes(project.ignores "platforms/android/app/src/main/generated/")))
+        t.isTrue("and so is gradle's own output" (StarterText.includes(project.ignores "platforms/android/app/build/")))
+
+        ; `npm start` cannot run an APK, so it does the nearest useful thing
+        ; rather than answering "missing script".
+        t.eqStr("start installs on a device" (StarterTest.commandOf(project "start")) "npm run android:install")
+        t.eqStr("and test type-checks the shared module" (StarterTest.commandOf(project "test")) "node scripts/rgr.js check src/Shared.rgr")
+
+        def seed@(optional):PlanFile (project.fileAt("src/Shared.rgr"))
+        t.isTrue("the shared module is planned" ((null? seed) == false))
+        if ((null? seed) == false) {
+            def sd:PlanFile (unwrap seed)
+            t.isTrue("as a seed" sd.isSeed)
+            ; `App` would shadow SwiftUI's `App` protocol on the other target, so
+            ; the class is `Shared` on both.
+            t.isTrue("holding class Shared" (contains sd.contents "class Shared {"))
+            t.isFalse("with no main, because the platform calls the shell" (contains sd.contents "@(main)"))
+        }
+    }
+
+    ; Device types are not separate builds: they change the minimum SDK, the
+    ; manifest and the dependencies of ONE app.
+    sfn testAndroidDevices:void (t:StarterCheck) {
+        def tv:StarterConfig (StarterTest.androidConfig())
+        def tvDevices:[string]
+        push tvDevices "tv"
+        tv.setDevices("android" tvDevices)
+        def tvPlan:ProjectPlan (StarterTest.projectFor(tv))
+        t.isFalse("a TV build plans cleanly" (tvPlan.hasErrors()))
+        def manifest@(optional):PlanFile (tvPlan.fileAt("platforms/android/app/src/main/AndroidManifest.xml"))
+        if ((null? manifest) == false) {
+            def m:PlanFile (unwrap manifest)
+            ; Without this the app does not appear on a TV at all.
+            t.isTrue("the TV manifest carries a leanback launcher" (contains m.contents "LEANBACK_LAUNCHER"))
+            t.isTrue("and says the touchscreen is optional" (contains m.contents "android.hardware.touchscreen"))
+        }
+        def tvGradle@(optional):PlanFile (tvPlan.fileAt("platforms/android/app/build.gradle.kts"))
+        if ((null? tvGradle) == false) {
+            def tg:PlanFile (unwrap tvGradle)
+            t.isTrue("and the TV material set is depended on" (contains tg.contents "androidx.tv:tv-material"))
+        }
+
+        def wear:StarterConfig (StarterTest.androidConfig())
+        def wearDevices:[string]
+        push wearDevices "wear"
+        wear.setDevices("android" wearDevices)
+        def wearPlan:ProjectPlan (StarterTest.projectFor(wear))
+        def wearGradle@(optional):PlanFile (wearPlan.fileAt("platforms/android/app/build.gradle.kts"))
+        if ((null? wearGradle) == false) {
+            def wg:PlanFile (unwrap wearGradle)
+            ; Wear OS 3 is API 30; a lower minimum simply will not install.
+            t.eqInt("a watch build raises the minimum to 30" (StarterText.firstNumber((StarterTest.lineWith(wg.contents "minSdk =")))) 30)
+            t.isTrue("and asks for the watch's own compose material" (contains wg.contents "androidx.wear.compose"))
+        }
+        def wearManifest@(optional):PlanFile (wearPlan.fileAt("platforms/android/app/src/main/AndroidManifest.xml"))
+        if ((null? wearManifest) == false) {
+            def wm:PlanFile (unwrap wearManifest)
+            t.isTrue("the watch declares itself a watch" (contains wm.contents "android.hardware.type.watch"))
+        }
+
+        def none:StarterConfig (StarterTest.androidConfig())
+        def empty:[string]
+        none.setDevices("android" empty)
+        def nonePlan:ProjectPlan (StarterTest.projectFor(none))
+        t.isTrue("no device type at all is an error" (StarterTest.problemAt(nonePlan "surfaces.android.devices")))
+
+        def bogus:StarterConfig (StarterTest.androidConfig())
+        def wrong:[string]
+        push wrong "fridge"
+        bogus.setDevices("android" wrong)
+        def bogusPlan:ProjectPlan (StarterTest.projectFor(bogus))
+        t.isTrue("and an invented one is named as the problem" (StarterTest.problemAt(bogusPlan "surfaces.android.devices")))
+
+        ; Android's rule, not a generic identifier rule: `-` is legal in an Apple
+        ; bundle id and illegal here.
+        def badPkg:StarterConfig (StarterTest.androidConfig())
+        badPkg.setOption("android" "package" "com.example-northwind")
+        def badPlan:ProjectPlan (StarterTest.projectFor(badPkg))
+        t.isTrue("a hyphen is not an android package" (StarterTest.problemAt(badPlan "surfaces.android.package")))
+        def onePart:StarterConfig (StarterTest.androidConfig())
+        onePart.setOption("android" "package" "northwind")
+        t.isTrue("and neither is a single segment" (StarterTest.problemAt((StarterTest.projectFor(onePart)) "surfaces.android.package")))
+    }
+
+    sfn testIosSurface:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.iosConfig())
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("an ios-only project plans cleanly" (project.hasErrors()))
+
+        def names:[string]
+        for (project.scriptsByName()) sc:PlanScript i {
+            push names sc.name
+        }
+        t.eqList("its scripts" names "doctor,ios:build,ios:compile,ios:plan,plan,setup,start,test")
+
+        ; Nothing here launches a simulator, so `start` builds the bundle.
+        t.eqStr("start builds the app" (StarterTest.commandOf(project "start")) "npm run ios:build")
+
+        def compile:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("the module is compiled to swift" (contains compile "-l=swift6"))
+        t.isTrue("into build/ios" (contains compile "-d=build/ios"))
+
+        ; `--` means "pass the rest to the COMPILER". Written with it, `--dry-run`
+        ; reached rgrc, the script saw no arguments, and the dry run silently
+        ; became a real build attempt.
+        def dry:string (StarterTest.commandOf(project "ios:plan"))
+        t.isTrue("the dry run passes its flag to the program" (contains dry "ios-build.rgr --dry-run"))
+        t.isFalse("not through `--` to the compiler" (contains dry "-- --dry-run"))
+
+        ; There is no .xcodeproj and no xcodebuild: the build is a Ranger program.
+        def build:string (StarterTest.commandOf(project "ios:build"))
+        t.isTrue("the build runs a ranger program" (contains build "run scripts/ios-build.rgr"))
+        t.isFalse("and never xcodebuild" (contains build "xcodebuild"))
+
+        def script@(optional):PlanFile (project.fileAt("scripts/ios-build.rgr"))
+        t.isTrue("the build script is planned" ((null? script) == false))
+        if ((null? script) == false) {
+            def sc2:PlanFile (unwrap script)
+            t.isFalse("and it is generated, so the config stays the source of truth" sc2.isSeed)
+            ; lib/apple ships inside ranger-compiler: nothing to install and
+            ; nothing to declare.
+            t.isTrue("it imports the bundled apple library" (contains sc2.contents "lib/apple/AppleAppBuilder.rgr"))
+            t.isTrue("carrying the bundle id" (contains sc2.contents "com.example.northwind"))
+            t.isTrue("both device families" (contains sc2.contents "AppleDeviceFamily.iphone()"))
+            t.isTrue("as chosen" (contains sc2.contents "AppleDeviceFamily.ipad()"))
+            t.isTrue("and the generated swift beside the host" (contains sc2.contents "build/ios/Shared.swift"))
+        }
+
+        ; The host struct cannot be named after the module: `Shared` is the class,
+        ; and `struct Shared: App` would collide with it.
+        def host@(optional):PlanFile (project.fileAt("platforms/ios/App.swift"))
+        t.isTrue("the swiftui host is planned" ((null? host) == false))
+        if ((null? host) == false) {
+            def h:PlanFile (unwrap host)
+            t.isTrue("as a seed" h.isSeed)
+            t.isTrue("named after the project, not the module" (contains h.contents "struct NorthwindApp: App"))
+            t.isTrue("and it holds the shared module" (contains h.contents "Shared()"))
+        }
+
+        t.isTrue("the generated swift is gitignored" (StarterText.includes(project.ignores "build/ios/")))
+
+        def phoneOnly:StarterConfig (StarterTest.iosConfig())
+        def one:[string]
+        push one "iphone"
+        phoneOnly.setDevices("ios" one)
+        def p2:ProjectPlan (StarterTest.projectFor(phoneOnly))
+        def s2@(optional):PlanFile (p2.fileAt("scripts/ios-build.rgr"))
+        if ((null? s2) == false) {
+            def f2:PlanFile (unwrap s2)
+            t.isFalse("an iPhone-only app does not claim the iPad" (contains f2.contents "AppleDeviceFamily.ipad()"))
+        }
+
+        ; Apple's rule is not Android's: a hyphen is legal, an underscore is not.
+        def hyphen:StarterConfig (StarterTest.iosConfig())
+        hyphen.setOption("ios" "bundleId" "com.example.north-wind")
+        t.isFalse("a hyphen is a legal bundle id" ((StarterTest.projectFor(hyphen)).hasErrors()))
+        def underscore:StarterConfig (StarterTest.iosConfig())
+        underscore.setOption("ios" "bundleId" "com.example.north_wind")
+        t.isTrue("an underscore is not" (StarterTest.problemAt((StarterTest.projectFor(underscore)) "surfaces.ios.bundleId")))
+
+        def noDevice:StarterConfig (StarterTest.iosConfig())
+        def empty:[string]
+        noDevice.setDevices("ios" empty)
+        t.isTrue("no device family is an error" (StarterTest.problemAt((StarterTest.projectFor(noDevice)) "surfaces.ios.devices")))
+        def wrongDevice:StarterConfig (StarterTest.iosConfig())
+        def w:[string]
+        push w "tv"
+        wrongDevice.setDevices("ios" w)
+        ; The vocabularies do not overlap on purpose, so `tv` belongs to Android
+        ; and is refused here.
+        t.isTrue("and an Android device type is not an iOS one" (StarterTest.problemAt((StarterTest.projectFor(wrongDevice)) "surfaces.ios.devices")))
+    }
+
+    ; Generating the iOS surface works on every machine; BUILDING it does not.
+    ; Off a Mac the checks have to read "unavailable" rather than "missing", or
+    ; somebody goes looking for a program they cannot install.
+    sfn testIosChecksAreUnavailableOffAMac:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.iosConfig())))
+        def sawXcrun:boolean false
+        for project.checks c:PlanCheck i {
+            if (c.group == "iOS") {
+                t.eqStr(("an iOS check is mac-only: " + c.label) c.onlyOn "darwin")
+                t.eqStr(("and it reads unavailable on linux: " + c.label) (StarterDoctor.verdictOf("linux" c "")) "unavailable")
+                if (c.program == "xcrun") {
+                    sawXcrun = true
+                }
+            }
+        }
+        t.isTrue("the toolchain is checked at all" sawXcrun)
+
+        ; And an unavailable check is nothing to act on: `doctor` must not fail a
+        ; Linux machine over a Mac-only build.
+        t.isFalse("unavailable is not actionable" (StarterDoctor.isActionable("unavailable")))
+        t.isTrue("missing still is" (StarterDoctor.isActionable("missing")))
+    }
+
+    ; One module, two targets: the entire point of the language, and the reason
+    ; both mobile surfaces default to `src/Shared.rgr` rather than one file each.
+    sfn testMobileSurfacesShareOneModule:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
+        cfg.setEnabled("android" true)
+        cfg.setEnabled("ios" true)
+        def phones:[string]
+        push phones "phone"
+        cfg.setDevices("android" phones)
+        def iphones:[string]
+        push iphones "iphone"
+        cfg.setDevices("ios" iphones)
+        cfg.setAgents(true true "auto")
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("both mobile surfaces plan together" (project.hasErrors()))
+
+        ; One seed, planned twice and claimed once: two profiles asking for the
+        ; same path must not produce two files.
+        def shared:int 0
+        for project.files f:PlanFile i {
+            if (f.path == "src/Shared.rgr") {
+                shared = shared + 1
+            }
+        }
+        t.eqInt("the shared module is planned exactly once" shared 1)
+
+        def android:string (StarterTest.commandOf(project "android:compile"))
+        def ios:string (StarterTest.commandOf(project "ios:compile"))
+        t.isTrue("kotlin is compiled from it" (contains android "src/Shared.rgr"))
+        t.isTrue("and swift from the same file" (contains ios "src/Shared.rgr"))
+        t.isTrue("into different directories" (contains android "-d=platforms/android"))
+        t.isTrue("that do not collide" (contains ios "-d=build/ios"))
+
+        ; Each host names the shared class, so a rename in the config would have
+        ; to move all three together.
+        def act@(optional):PlanFile (project.fileAt("platforms/android/app/src/main/kotlin/com/example/northwind/MainActivity.kt"))
+        def swift@(optional):PlanFile (project.fileAt("platforms/ios/App.swift"))
+        t.isTrue("both hosts are planned" (((null? act) == false) && ((null? swift) == false)))
+
+        def sectionIds:[string]
+        for project.sections s:PlanSection i {
+            push sectionIds s.id
+        }
+        t.isTrue("the agent file documents android" (StarterText.includes(sectionIds "surface-android")))
+        t.isTrue("and ios" (StarterText.includes(sectionIds "surface-ios")))
+    }
+
     sfn testWizardSkipsIrrelevantQuestions:void (t:StarterCheck) {
         def w:StarterWizard (StarterTest.freshWizard())
         StarterTest.press(w "d e m o return return")
@@ -1043,6 +1395,72 @@ class StarterTest {
         StarterTest.press(w "space return")
         def afterLibrary:WizardQuestion (w.current())
         t.eqStr("and the cli one is skipped" afterLibrary.id "docs")
+    }
+
+    ; The device questions exist because the answer is not derivable: an Android
+    ; app for a watch and one for a phone are the same build with a different
+    ; minimum SDK, and nothing but an answer can tell them apart.
+    sfn testWizardAsksForDevices:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        ; cli 0, library 1, web 2, server 3, desktop 4, android 5, ios 6.
+        StarterTest.press(w "down down down down down space down space return")
+        def q1:WizardQuestion (w.current())
+        t.eqStr("android's targets come first" q1.id "targets:android")
+        StarterTest.press(w "return")
+        def q2:WizardQuestion (w.current())
+        t.eqStr("then its devices" q2.id "devices:android")
+        t.eqInt("with the profile's default already ticked" (q2.countPicked()) 1)
+        t.eqList("which is the phone" (q2.pickedIds()) "phone")
+
+        ; Add the watch. Nothing about it is a separate build; it is this app with
+        ; a higher minimum.
+        StarterTest.press(w "down down down space return")
+        def q3:WizardQuestion (w.current())
+        t.eqStr("ios's targets are next" q3.id "targets:ios")
+        StarterTest.press(w "return")
+        def q4:WizardQuestion (w.current())
+        t.eqStr("then its device families" q4.id "devices:ios")
+        t.eqList("starting on the iPhone" (q4.pickedIds()) "iphone")
+        StarterTest.press(w "down space return")
+
+        def cfg:StarterConfig (w.configOf())
+        t.eqList("the android answer reaches the configuration" (cfg.devicesOf("android")) "phone,wear")
+        t.eqList("and the ios one" (cfg.devicesOf("ios")) "iphone,ipad")
+
+        ; And the configuration the wizard produced is one the planner accepts:
+        ; the wizard cannot offer an answer that fails validation.
+        def project:ProjectPlan (StarterTest.projectFor(cfg))
+        t.isFalse("what the wizard produced plans cleanly" (project.hasErrors()))
+    }
+
+    ; A device question cannot be confirmed empty, for the same reason the
+    ; surfaces one cannot: the planner would refuse the result.
+    sfn testWizardRefusesNoDevice:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        StarterTest.press(w "down down down down down space return")
+        StarterTest.press(w "return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the devices question is asked" q.id "devices:android")
+        ; Untick the default and try to continue.
+        StarterTest.press(w "space")
+        t.eqInt("nothing is picked" (q.countPicked()) 0)
+        StarterTest.press(w "return")
+        def still:WizardQuestion (w.current())
+        t.eqStr("and it will not continue" still.id "devices:android")
+    }
+
+    ; A surface with no device notion is not asked about devices at all.
+    sfn testWizardSkipsDevicesForDesktopishSurfaces:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        StarterTest.press(w "space return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("a command line project is asked for targets" q.id "targets:cli")
+        StarterTest.press(w "space return")
+        def after:WizardQuestion (w.current())
+        t.eqStr("and goes straight on, with no devices question" after.id "docs")
     }
 
     sfn testWizardBackAndCancel:void (t:StarterCheck) {
@@ -1194,10 +1612,18 @@ class StarterTest {
         StarterTest.testWebSurface(t)
         StarterTest.testWebAndCliTogether(t)
         StarterTest.testWebRejectsAnImpossibleTarget(t)
+        StarterTest.testAndroidSurface(t)
+        StarterTest.testAndroidDevices(t)
+        StarterTest.testIosSurface(t)
+        StarterTest.testIosChecksAreUnavailableOffAMac(t)
+        StarterTest.testMobileSurfacesShareOneModule(t)
         StarterTest.testWizardWalk(t)
         StarterTest.testWizardRefusesABadName(t)
         StarterTest.testWizardUnavailableSurface(t)
         StarterTest.testWizardSkipsIrrelevantQuestions(t)
+        StarterTest.testWizardAsksForDevices(t)
+        StarterTest.testWizardRefusesNoDevice(t)
+        StarterTest.testWizardSkipsDevicesForDesktopishSurfaces(t)
         StarterTest.testWizardBackAndCancel(t)
         StarterTest.testWizardStepCounter(t)
         StarterTest.testWizardView(t)

@@ -1017,7 +1017,7 @@ several of its details did not, and those are the interesting part.
 | `StarterTargets.rgr` | the target table, from the compiler or bundled |
 | `StarterPlan.rgr` | `ProjectPlan`: files, scripts, deps, sections, checks |
 | `StarterProfile.rgr` | the profile base class and its seven contributions |
-| `ProfileCli.rgr`, `ProfileLibrary.rgr` | the two surfaces that work |
+| `ProfileCli.rgr`, `ProfileLibrary.rgr`, `ProfileWeb.rgr`, `ProfileAndroid.rgr`, `ProfileIos.rgr` | the five surfaces that work |
 | `StarterProfiles.rgr` | the registry |
 | `StarterTemplates.rgr` | the generated file bodies |
 | `StarterPlanner.rgr` | `Config` -> `ProjectPlan`, plus the core files |
@@ -1029,13 +1029,16 @@ several of its details did not, and those are the interesting part.
 | `StarterHost.rgr` | the only file that touches the world |
 | `StarterMain.rgr` | argv -> a command -> an exit status |
 | `StarterDump.rgr` | print a plan for a configuration built in code |
-| `StarterTest.rgr` | 140 checks, no filesystem |
+| `StarterDoctor.rgr` | the pure verdict for one check on one platform |
+| `StarterDescribe.rgr` | `describe --json`, from the registries |
+| `StarterWizard.rgr`, `StarterWizardView.rgr` | the pure state machine and the pure renderer |
+| `StarterTest.rgr` | 369 checks, no filesystem |
 
 ### 20.2 What it is verified against
 
 Not "it compiles". The following were run:
 
-* **140 checks on three targets.** `npm run starter:test`, `:python` and `:go`
+* **369 checks on three targets.** `npm run starter:test`, `:python` and `:go`
   all pass, with the compiler `npm install` resolves today.
 * **Thirteen of fourteen targets compile** the core. Scala does not, for a
   reason that is not this code's -- see §20.5.
@@ -1047,6 +1050,10 @@ Not "it compiles". The following were run:
   never had it -- `package.json`, `AGENTS.md`, the seeds, all of it.
 * **Author edits survive.** A hand-added `lint` script, a `workspaces` key and a
   paragraph of README prose all came through an apply untouched.
+* **Both mobile surfaces compile from one module.** A generated `android,ios`
+  project compiles `src/Shared.rgr` to `platforms/android/app/src/main/generated/
+  Shared.kt` and to `build/ios/Shared.swift`, and `npm run ios:plan` prints the
+  whole iOS build -- on Linux, where it cannot be run.
 * **A hand-edited generated file is kept and reported**, not overwritten.
 
 ### 20.3 The four open decisions, decided
@@ -1186,7 +1193,65 @@ a project without a command line surface had neither. The core supplies both now
 -- `start` runs the dev server, and `test` type-checks without pretending to be a
 test.
 
-### 20.8 Driving it as an agent
+### 20.8 The two mobile surfaces
+
+`ProfileAndroid` and `ProfileIos` are ONE Ranger module, `src/Shared.rgr`, class
+`Shared`, compiled to Kotlin for one and to Swift for the other. Two
+near-identical modules would be the opposite of what the language is for, and
+both surfaces default to the same entry so that nothing has to arrange it.
+
+* **The class is `Shared`, not `App`.** `App` is a SwiftUI PROTOCOL, and a class
+  of that name makes the host's `struct NorthwindApp: App` resolve to the wrong
+  thing. The host struct is named from the project for the same reason.
+* **`-ktpackage` and the host's `package` declaration both come from
+  `surfaces.android.package`**, so they cannot disagree. A mismatch does not fail
+  the Ranger compile -- it fails later, in Gradle, as an unresolved reference to
+  a class that is right there in the source set.
+* **iOS builds without `.xcodeproj` and without `xcodebuild`.**
+  `scripts/ios-build.rgr` drives `xcrun`, `swiftc`, `plutil` and `codesign`
+  through `lib/apple`, which SHIPS INSIDE `ranger-compiler` -- nothing to install
+  and nothing to declare. `lib/Shell.rgr`'s dry run is what makes it testable:
+  `npm run ios:plan` prints the SDK, the triple, the device families and every
+  command line, and executes nothing, so the build's DECISIONS are checked on a
+  machine that is not a Mac. Verified that way on Linux.
+* **Generating is not building.** The whole iOS surface generates on any machine
+  and `doctor` reports the Xcode tools as `unavailable` rather than `missing`.
+  Refusing to generate off a Mac would make the configuration machine-dependent,
+  which is the one thing it must never be.
+
+Device types are not separate builds. They change the minimum SDK, the manifest
+and the dependencies of ONE app: `tv` adds `LEANBACK_LAUNCHER` (without which the
+app does not appear on a TV at all) and `androidx.tv:tv-material`; `wear` forces
+`minSdk 30`, because Wear OS 3 is API 30 and a lower minimum will not install.
+The Android and iOS vocabularies do not overlap on purpose, so one
+`--devices phone,tablet,iphone,ipad` is routed to whichever surfaces know each
+name, and a name nobody knows is an error rather than a silent default.
+
+The mobile surfaces exposed four things that were nothing to do with mobile:
+
+* **`npm test` type-checked a file the project does not have.**
+  `StarterPlanner.entryOf` picked the entry from a hardcoded surface chain --
+  cli, then web, then cli again -- so a mobile-only project got `src/Main.rgr`.
+  It asks the enabled profiles in registration order now, through a new
+  `StarterProfile.entryOf`, so a new surface needs no line in that function.
+* **`npm start` answered "missing script"** for a mobile-only project. It cannot
+  run an APK, but it can do the nearest useful thing: Android installs on a
+  device, iOS builds the bundle.
+* **`gradle --version` was reported as a rule of dashes.** `firstLine` is not
+  enough for a program that prints a banner first, so version reading is
+  `StarterText.versionLine`: the first line carrying both a digit and a letter.
+* **The doctor's `unavailable` line read backwards** -- "not available on darwin
+  builds from here". It names both platforms now: "only checkable on macOS --
+  this is Linux".
+
+The screenshot harness gained something the mobile walk forced: each step may
+name the lines its frame must contain, and a frame that does not match fails the
+run. The first mobile walk produced a set of frames that looked plausible and
+were all one step out of phase, because a target question for a single-target
+surface opens ALREADY TICKED and the script's `space` was unticking it. A
+screenshot nobody checks is a screenshot that documents last month.
+
+### 20.9 Driving it as an agent
 
 `describe --json` is one call that answers the commands and their flags, which
 surfaces this BUILD can generate, the targets the installed compiler has, the
@@ -1199,10 +1264,10 @@ Every command takes `--json`, including the failures: a `--json` run that
 answered prose on error would leave an agent parsing sentences. Exit status is 0
 worked, 1 a problem with the project, 2 a problem with the command line.
 
-### 20.9 What is left
+### 20.10 What is left
 
-The server, desktop, Android and iOS surfaces. Enabling one is an error that
-names the milestone; the wizard shows them, greyed, with the same note.
+The server and desktop surfaces. Enabling one is an error that names the
+milestone; the wizard shows them, greyed, with the same note.
 
 **The server surface is blocked on a release, not on design.** Ranger's
 `@(HttpServer)` annotation with `@(GET "/path")` methods now works on es6 as well

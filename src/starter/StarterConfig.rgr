@@ -227,11 +227,19 @@ class StarterConfig {
                 s.putKey("target" (JsonValue.fromText("kotlin")))
                 s.putKey("package" (JsonValue.fromText((StarterConfig.reverseDomain(name)))))
                 s.putKey("devices" (JsonValue.newArray()))
+                ; The SAME module as iOS. One source compiled to Kotlin here and
+                ; to Swift there is the entire point of the language; two
+                ; near-identical modules would be the opposite of it.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
             }
             case "ios" {
                 s.putKey("target" (JsonValue.fromText("swift6")))
                 s.putKey("bundleId" (JsonValue.fromText((StarterConfig.reverseDomain(name)))))
                 s.putKey("devices" (JsonValue.newArray()))
+                ; `Shared`, not `App`: `App` is a SwiftUI PROTOCOL, and a class
+                ; of that name makes `struct MyApp: App` resolve to the wrong
+                ; thing.
+                s.putKey("entry" (JsonValue.fromText("src/Shared.rgr")))
             }
         }
         return s

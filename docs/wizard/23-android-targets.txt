@@ -1,0 +1,12 @@
+  Ranger project setup                                             4 of 11
+  ────────────────────────────────────────────────────────────────────────
+
+  Android: which languages?
+
+  One source, compiled to each of these. They are the compiler's own
+  targets; a starred one is a variant compiled with an extra flag.
+
+  ▸ [x] Kotlin                  gradle packaging
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

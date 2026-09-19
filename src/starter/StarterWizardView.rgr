@@ -140,7 +140,15 @@ class StarterWizardView {
         for surfaces sid:string i {
             def label:string (StarterConfig.surfaceTitle(sid))
             def ts:[string] (w.targets.inTableOrder((cfg.targetsOf(sid))))
-            push out ("    " + (StarterText.padRight(label keyWidth)) + (StarterText.joinWith(ts ", ")))
+            def said:string (StarterText.joinWith(ts ", "))
+            ; The devices belong on this line too. They are half the answer for a
+            ; mobile surface -- a watch build and a phone build differ only here
+            ; -- and a review screen that does not show them cannot be reviewed.
+            def devices:[string] (cfg.devicesOf(sid))
+            if ((array_length devices) > 0) {
+                said = (said + " -- " + (StarterText.joinWith(devices ", ")))
+            }
+            push out ("    " + (StarterText.padRight(label keyWidth)) + said)
         }
         def docs:string "no"
         if (cfg.docsEnabled()) {

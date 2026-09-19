@@ -59,6 +59,7 @@ def main():
 
     os.makedirs(outdir, exist_ok=True)
     frames = []
+    written = {}
     raw = drain(fd, settle=1.2)
     frames.append(("00-open", raw.decode("utf-8", "replace")))
 
@@ -101,8 +102,25 @@ def main():
             lines.pop(0)
         while lines and not lines[-1].strip():
             lines.pop()
-        open(os.path.join(outdir, name + ".txt"), "w").write("\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
+        written[name] = text
+        open(os.path.join(outdir, name + ".txt"), "w").write(text)
     print("exit code:", code)
     print("frames:", ", ".join(n for n, _ in frames))
+
+    # A screenshot nobody checks is a screenshot that documents last month. Each
+    # step may name the lines its frame must contain; a frame that does not is a
+    # failed run, not a file quietly committed. The keypress loop hands the
+    # terminal one key per poll, so which repaint a drain catches is a matter of
+    # timing -- this is what turns that into a loud failure.
+    bad = []
+    for step in steps:
+        for want in step.get("expect", []):
+            if want not in written.get(step["name"], ""):
+                bad.append((step["name"], want))
+    for name, want in bad:
+        print("MISMATCH %s: expected %r" % (name, want), file=sys.stderr)
+    if bad:
+        sys.exit(1)
 
 main()

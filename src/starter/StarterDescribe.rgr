@@ -116,6 +116,16 @@ class StarterDescribe {
                 if ((array_length allowed) > 0) {
                     entry.putKey("targetsAllowed" (JsonValue.fromStrings(allowed)))
                 }
+                ; The `--devices` vocabulary. Without it an agent has to guess
+                ; whether an Android tablet is `tablet` or `tablets`, and a guess
+                ; is a JSON error rather than a default. The names do not overlap
+                ; between surfaces on purpose, so one `--devices` list is routed
+                ; to whichever surfaces know each name.
+                def devices:[string] (p.devicesKnown())
+                if ((array_length devices) > 0) {
+                    entry.putKey("devices" (JsonValue.fromStrings(devices)))
+                    entry.putKey("devicesDefault" (JsonValue.fromStrings((p.devicesDefault()))))
+                }
             }
             out.addItem(entry)
         }
@@ -129,12 +139,6 @@ class StarterDescribe {
             }
             case "desktop" {
                 return "not implemented yet: SDL2 through C++ (PLAN_STARTER.md M9)"
-            }
-            case "android" {
-                return "not implemented yet: a Kotlin module in a Compose shell (PLAN_STARTER.md M10)"
-            }
-            case "ios" {
-                return "not implemented yet: a Swift module over lib/apple (PLAN_STARTER.md M11)"
             }
         }
         return "not implemented yet"

@@ -365,16 +365,53 @@ class StarterMain {
                 cfg.setTargets(sid chosenTargets)
             }
         }
-        def devices:[string] (args.list("devices"))
-        if ((array_length devices) > 0) {
-            for surfaces sid:string i {
-                if (sid == "android") {
-                    cfg.setDevices(sid devices)
-                }
-                if (sid == "ios") {
-                    cfg.setDevices(sid devices)
+        ; One `--devices` list, routed to the surfaces that recognise each name.
+        ; The vocabularies do not overlap -- Android has `phone`, iOS has
+        ; `iphone` -- so `--devices phone,iphone` is unambiguous, and a surface
+        ; that needs a device type and was given none takes its default rather
+        ; than failing validation on a flag the user did supply.
+        def named:[string] (args.list("devices"))
+        def registry:StarterProfiles (StarterProfiles.registry())
+        for surfaces sid:string i {
+            def hit@(optional):StarterProfile (registry.find(sid))
+            if (null? hit) {
+                continue
+            }
+            def profile:StarterProfile (unwrap hit)
+            def known:[string] (profile.devicesKnown())
+            if ((array_length known) == 0) {
+                continue
+            }
+            def mine:[string]
+            for named d:string j {
+                if (StarterText.includes(known d)) {
+                    push mine d
                 }
             }
+            if ((array_length mine) == 0) {
+                mine = (profile.devicesDefault())
+            }
+            cfg.setDevices(sid mine)
+        }
+        def unknown:[string]
+        for named d:string i {
+            def claimed:boolean false
+            for surfaces sid:string j {
+                def hit2@(optional):StarterProfile (registry.find(sid))
+                if ((null? hit2) == false) {
+                    def p2:StarterProfile (unwrap hit2)
+                    if (StarterText.includes((p2.devicesKnown()) d)) {
+                        claimed = true
+                    }
+                }
+            }
+            if (claimed == false) {
+                push unknown d
+            }
+        }
+        if ((array_length unknown) > 0) {
+            def why:string ("no enabled surface has a device type called `" + (StarterText.joinWith(unknown "`, `")) + "`.")
+            return (StarterMain.fail(args why (StarterMain.noProblems())))
         }
         def wantsDocs:boolean (args.has("docs"))
         cfg.setDocs(wantsDocs wantsDocs (args.has("strict-docs")))
@@ -549,6 +586,7 @@ class StarterMain {
         def wantJson:boolean (args.has("json"))
         def actionable:int 0
         def jsonGroups:JsonValue (JsonValue.newArray())
+        def platform:string (host.platform())
 
         if (wantJson == false) {
             print ("Ranger project doctor -- " + (cfg.projectName()))
@@ -568,7 +606,7 @@ class StarterMain {
                 ; ONE process per check: the version text answers both "is it
                 ; there" and "which one is it".
                 def version:string (StarterMain.versionFor(host c))
-                def verdict:string (StarterDoctor.verdictOf((host.platform()) c version))
+                def verdict:string (StarterDoctor.verdictOf(platform c version))
                 if (StarterDoctor.isActionable(verdict)) {
                     actionable = actionable + 1
                 }
@@ -582,12 +620,15 @@ class StarterMain {
                     if (c.minMajor > 0) {
                         entry.putKey("minMajor" (JsonValue.fromInt(c.minMajor)))
                     }
+                    if ((strlen c.onlyOn) > 0) {
+                        entry.putKey("onlyOn" (JsonValue.fromText(c.onlyOn)))
+                    }
                     if (verdict != "ok") {
                         entry.putKey("hint" (JsonValue.fromText(c.hint)))
                     }
                     jsonChecks.addItem(entry)
                 } {
-                    StarterMain.printCheck(c verdict version)
+                    StarterMain.printCheck(c verdict version platform)
                 }
             }
             if wantJson {
@@ -633,7 +674,7 @@ class StarterMain {
         return 1
     }
 
-    sfn printCheck:void (c:PlanCheck verdict:string version:string) {
+    sfn printCheck:void (c:PlanCheck verdict:string version:string platform:string) {
         def label:string (StarterText.padRight(c.label 26))
         switch verdict {
             case "ok" {
@@ -644,7 +685,9 @@ class StarterMain {
                 print ("            " + c.hint)
             }
             case "unavailable" {
-                print ("  -         " + label + "not available on " + c.onlyOn + " builds from here")
+                ; NOT a missing tool: it cannot be installed here at all. Saying
+                ; "missing" would send somebody looking for it.
+                print ("  -         " + label + "only checkable on " + (StarterDoctor.platformTitle(c.onlyOn)) + " -- this is " + (StarterDoctor.platformTitle(platform)))
             }
             case "too-old" {
                 print ("  TOO OLD   " + label + version + " -- needs " + (to_string c.minMajor) + " or later")

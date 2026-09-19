@@ -485,7 +485,7 @@ class StarterHost {
         def err:string (itemAt result 2)
         def combined:string (out + err)
         if (code == "0") {
-            return (StarterText.firstLine(combined))
+            return (StarterText.versionLine(combined))
         }
         ; A program that exists and rejects the flag still printed something; one
         ; that does not exist did not start.
@@ -506,7 +506,7 @@ class StarterHost {
         if (code == "127") {
             return ""
         }
-        def line:string (StarterText.firstLine(combined))
+        def line:string (StarterText.versionLine(combined))
         if ((strlen line) == 0) {
             return ""
         }

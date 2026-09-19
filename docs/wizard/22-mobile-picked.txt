@@ -1,4 +1,4 @@
-  Ranger project setup                                              3 of 7
+  Ranger project setup                                             3 of 11
   ────────────────────────────────────────────────────────────────────────
 
   Where should it run?
@@ -6,13 +6,13 @@
   Pick as many as apply. These are independent of each other and of the
   kind.
 
-  ▸ [ ] Command line            an entry point and a way to run it
+    [ ] Command line            an entry point and a way to run it
     [ ] Library                 a manifest for each ecosystem that ha…
     [ ] Web                     a page, and a Ranger ES module it imp…
      –  Server                  not built yet -- an HTTP service (M8)
      –  Desktop (SDL2)          not built yet -- SDL2 through C++ (M9)
-    [ ] Android                 a Kotlin module inside a Compose shell
-    [ ] iOS                     a Swift module inside a SwiftUI shell…
+    [x] Android                 a Kotlin module inside a Compose shell
+  ▸ [x] iOS                     a Swift module inside a SwiftUI shell…
 
   ────────────────────────────────────────────────────────────────────────
   ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

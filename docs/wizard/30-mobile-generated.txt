@@ -1,0 +1,22 @@
+ranger-starter: wrote ranger.project.json
+
+create    .claude/skills/ranger-build/SKILL.md
+create    .claude/skills/ranger-lang/SKILL.md
+create    .github/workflows/ci.yml
+create    .gitignore
+create    AGENTS.md
+create    README.md
+create    package.json
+create    platforms/android/app/build.gradle.kts
+create    platforms/android/app/src/main/AndroidManifest.xml
+create    platforms/android/app/src/main/kotlin/com/example/northwind/MainActivity.kt a starting point; yours once it is written
+create    platforms/android/build.gradle.kts
+create    platforms/android/settings.gradle.kts
+create    platforms/ios/App.swift            a starting point; yours once it is written
+create    ranger.json
+create    scripts/ios-build.rgr
+create    scripts/rgr.js
+create    src/Shared.rgr                     a starting point; yours once it is written
+
+
+17 created

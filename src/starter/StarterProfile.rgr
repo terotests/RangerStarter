@@ -59,6 +59,45 @@ class StarterProfile {
         return "es6"
     }
 
+    ; The device types this surface understands, or an empty list when it has no
+    ; such notion. The vocabularies do not overlap between surfaces -- Android
+    ; has `phone`, iOS has `iphone` -- which is what lets one `--devices` list be
+    ; routed to the surfaces that know each name.
+    fn devicesKnown:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; What to use when a surface needs a device type and none was named.
+    fn devicesDefault:[string] () {
+        def out:[string]
+        return out
+    }
+
+    ; What the wizard shows for one device type, and what it says about it. On
+    ; the base so the wizard can build the question from `devicesKnown()` without
+    ; a table of its own -- the one thing that would drift the day a surface
+    ; gains a device type.
+    fn deviceLabel:string (device:string) {
+        return device
+    }
+
+    fn deviceHint:string (device:string) {
+        return ""
+    }
+
+    ; The Ranger file this surface compiles. Every profile that generates one
+    ; overrides this; the base answers "" so the planner can ask any profile
+    ; without knowing which surfaces have an entry point.
+    ;
+    ; It is on the base class because `npm test` and the API doc build need ONE
+    ; entry for the project, and picking it from a hardcoded surface chain in the
+    ; planner is how a mobile-only project ended up type-checking `src/Main.rgr`
+    ; -- a file it does not have.
+    fn entryOf:string (cfg:StarterConfig) {
+        return ""
+    }
+
     ; --- the seven contributions ---------------------------------------------
     ;
     ; `validate` runs first and may add problems; when any of them is an error,

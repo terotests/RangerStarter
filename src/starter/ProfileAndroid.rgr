@@ -1,0 +1,299 @@
+; SPDX-License-Identifier: MIT
+;
+; ProfileAndroid -- a Kotlin module inside a Compose host shell.
+;
+;     src/Android.rgr  ->  Kotlin  ->  the app's source set  ->  Gradle
+;
+; A HOST SHELL, not an Android ecosystem. The shell owns the lifecycle and the
+; UI and is a seed the author owns from the moment it exists; the Ranger module
+; owns what the app knows. Generating a whole Gradle universe from here would be
+; generating something nobody asked for and everybody would then maintain by
+; hand.
+;
+; THE ONE THING THAT MUST AGREE: `-ktpackage` and the host's `package`
+; declaration. They both come from `surfaces.android.package`, because a mismatch
+; does not fail the Ranger compile -- it fails later, in Gradle, as an unresolved
+; reference to a class that is right there in the source set.
+;
+; Device types are not separate builds. They change the minimum SDK, the manifest
+; features and the dependencies of ONE app: a TV needs a Leanback launcher
+; category or it does not appear on the device at all, and Wear OS 3 is API 30,
+; so a lower minimum simply will not install.
+
+Import "StarterProfile.rgr"
+Import "StarterTemplates.rgr"
+
+class ProfileAndroid extends StarterProfile {
+
+    Constructor () {
+        id = "android"
+    }
+
+    fn defaultTarget:string () {
+        return "kotlin"
+    }
+
+    fn targetsAllowed:[string] () {
+        def out:[string]
+        push out "kotlin"
+        return out
+    }
+
+    sfn deviceIds:[string] () {
+        def out:[string]
+        push out "phone"
+        push out "tablet"
+        push out "tv"
+        push out "wear"
+        return out
+    }
+
+    sfn deviceTitle:string (device:string) {
+        switch device {
+            case "phone" {
+                return "Phone"
+            }
+            case "tablet" {
+                return "Tablet"
+            }
+            case "tv" {
+                return "TV"
+            }
+            case "wear" {
+                return "Wear"
+            }
+        }
+        return device
+    }
+
+    fn devicesKnown:[string] () {
+        return (ProfileAndroid.deviceIds())
+    }
+
+    fn devicesDefault:[string] () {
+        def out:[string]
+        push out "phone"
+        return out
+    }
+
+    fn deviceLabel:string (device:string) {
+        return (ProfileAndroid.deviceTitle(device))
+    }
+
+    ; What each device type actually changes, because none of them is a separate
+    ; build and the wizard should not suggest otherwise.
+    fn deviceHint:string (device:string) {
+        switch device {
+            case "phone" {
+                return "minSdk 24, the ordinary launcher"
+            }
+            case "tablet" {
+                return "the same build; a larger layout is yours to write"
+            }
+            case "tv" {
+                return "a Leanback launcher entry, or it never appears on a TV"
+            }
+            case "wear" {
+                return "minSdk 30 -- Wear OS 3 will not install below it"
+            }
+        }
+        return ""
+    }
+
+    fn validate:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        this.checkTargets(cfg plan targets)
+
+        def pkg:string (this.packageOf(cfg))
+        if ((ProfileAndroid.isUsablePackage(pkg)) == false) {
+            plan.addProblem((StarterProblem.about("surfaces.android.package" ("`" + pkg + "` is not an Android package name. It is dot-separated segments of lowercase letters, digits and `_`, each starting with a letter -- `com.example.northwind`."))))
+        }
+
+        def devices:[string] (cfg.devicesOf(id))
+        if ((array_length devices) == 0) {
+            plan.addProblem((StarterProblem.about("surfaces.android.devices" ("no device type chosen. Pick at least one of " + (StarterText.joinWith((ProfileAndroid.deviceIds()) ", ")) + "."))))
+        }
+        def known:[string] (ProfileAndroid.deviceIds())
+        for devices d:string i {
+            if ((StarterText.includes(known d)) == false) {
+                plan.addProblem((StarterProblem.about("surfaces.android.devices" ("`" + d + "` is not an Android device type. They are " + (StarterText.joinWith(known ", ")) + "."))))
+            }
+        }
+    }
+
+    ; Android's own rule, minus the parts nothing here can produce. A segment
+    ; that starts with a digit, or an empty one from a doubled dot, is what a
+    ; generated name actually gets wrong.
+    sfn isUsablePackage:boolean (pkg:string) {
+        if ((strlen pkg) == 0) {
+            return false
+        }
+        def parts:[string] (strsplit pkg ".")
+        if ((array_length parts) < 2) {
+            return false
+        }
+        for parts part:string i {
+            if ((strlen part) == 0) {
+                return false
+            }
+            def first:int (charAt part 0)
+            if (first < 97) {
+                return false
+            }
+            if (first > 122) {
+                return false
+            }
+            def cnt:int (strlen part)
+            def j:int 0
+            while (j < cnt) {
+                def c:int (charAt part j)
+                def okChar:boolean false
+                if (c >= 97) {
+                    if (c <= 122) {
+                        okChar = true
+                    }
+                }
+                if (c >= 48) {
+                    if (c <= 57) {
+                        okChar = true
+                    }
+                }
+                if (c == 95) {
+                    okChar = true
+                }
+                if (okChar == false) {
+                    return false
+                }
+                j = j + 1
+            }
+        }
+        return true
+    }
+
+    ; The host package, and the `-ktpackage` value: one answer, so the two cannot
+    ; disagree.
+    fn packageOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "package" (StarterConfig.reverseDomain((cfg.projectName())))))
+    }
+
+    fn entryOf:string (cfg:StarterConfig) {
+        return (cfg.optionOf(id "entry" "src/Shared.rgr"))
+    }
+
+    fn moduleNameOf:string (cfg:StarterConfig) {
+        return (StarterText.stemName((this.entryOf(cfg))))
+    }
+
+    ; Where the compiled Kotlin lands: a source set Gradle is told about, beside
+    ; the hand-written one rather than mixed into it, so "generated" is a
+    ; directory rather than a convention.
+    sfn generatedDir:string () {
+        return "platforms/android/app/src/main/generated"
+    }
+
+    fn contributeFiles:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def className:string (StarterText.pascalCase(moduleName))
+        def name:string (cfg.projectName())
+        def pkg:string (this.packageOf(cfg))
+        def devices:[string] (cfg.devicesOf(id))
+
+        plan.addFile((PlanFile.generated("scripts/rgr.js" (StarterTemplates.rgrWrapper(targets)) id)))
+        plan.addFile((PlanFile.generated("platforms/android/settings.gradle.kts" (StarterTemplates.androidSettingsGradle(name)) id)))
+        plan.addFile((PlanFile.generated("platforms/android/build.gradle.kts" (StarterTemplates.androidRootGradle()) id)))
+        plan.addFile((PlanFile.generated("platforms/android/app/build.gradle.kts" (StarterTemplates.androidAppGradle(pkg devices className)) id)))
+        plan.addFile((PlanFile.generated("platforms/android/app/src/main/AndroidManifest.xml" (StarterTemplates.androidManifest(name devices)) id)))
+
+        ; The shell and the module are seeds: the app is the author's.
+        def activityPath:string ("platforms/android/app/src/main/kotlin/" + (ProfileAndroid.packagePath(pkg)) + "/MainActivity.kt")
+        plan.addFile((PlanFile.seed(activityPath (StarterTemplates.androidMainActivity(pkg className)) id)))
+        plan.addFile((PlanFile.seed(entry (StarterTemplates.mobileSeed(name className)) id)))
+
+        plan.addIgnore((ProfileAndroid.generatedDir()) + "/")
+        plan.addIgnore("platforms/android/.gradle/")
+        plan.addIgnore("platforms/android/build/")
+        plan.addIgnore("platforms/android/app/build/")
+        plan.addIgnore("platforms/android/local.properties")
+    }
+
+    sfn packagePath:string (pkg:string) {
+        def parts:[string] (strsplit pkg ".")
+        return (StarterText.joinWith(parts "/"))
+    }
+
+    fn contributeScripts:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def name:string (cfg.projectName())
+        def pkg:string (this.packageOf(cfg))
+
+        ; `-ktpackage` is what makes the generated Kotlin land in the host's
+        ; package. Without it the class is in the default package and Gradle
+        ; fails on an unresolved reference to a file that is right there.
+        def compile:string ("node scripts/rgr.js build " + entry + " -l=kotlin -d=" + (ProfileAndroid.generatedDir()) + " -- -ktpackage=" + pkg)
+        plan.addScript((PlanScript.entry("android:compile" compile id)))
+        plan.addScript((PlanScript.entry("android:build" "npm run android:compile && cd platforms/android && gradle assembleDebug" id)))
+        plan.addScript((PlanScript.entry("android:install" "npm run android:compile && cd platforms/android && gradle installDebug" id)))
+    }
+
+    fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        def entry:string (this.entryOf(cfg))
+        def moduleName:string (this.moduleNameOf(cfg))
+        def className:string (StarterText.pascalCase(moduleName))
+        def name:string (cfg.projectName())
+        def pkg:string (this.packageOf(cfg))
+        def devices:[string] (cfg.devicesOf(id))
+
+        def l:[string]
+        push l "## Android"
+        push l ""
+        push l ("Ranger source: `" + entry + "`, compiled to Kotlin into")
+        push l ("`" + (ProfileAndroid.generatedDir()) + "/" + className + ".kt` and used by the Compose")
+        push l "host in `platforms/android/app/src/main/kotlin`."
+        push l ""
+        push l ("Package: `" + pkg + "`. Devices: " + (StarterText.joinWith(devices ", ")) + ".")
+        push l ""
+        push l "```bash"
+        push l "npm run android:compile   # Ranger -> Kotlin"
+        push l "npm run android:build     # and assembleDebug"
+        push l "npm run android:install   # and install on a running device"
+        push l "```"
+        push l ""
+        push l "- **`-ktpackage` must match the host's package.** Both come from"
+        push l "  `surfaces.android.package`. A mismatch does not fail the Ranger compile; it"
+        push l "  fails later, in Gradle, as an unresolved reference to a class that is right"
+        push l "  there in the source set."
+        push l ("- **The generated Kotlin is generated.** `" + (ProfileAndroid.generatedDir()) + "` is")
+        push l "  gitignored and rewritten on every compile. Edit the Ranger source."
+        push l "- **Host code is `platforms/android`**, and it is yours. The shell and the"
+        push l "  manifest were written once; nothing regenerates the shell."
+        if (StarterText.includes(devices "tv")) {
+            push l "- **TV:** the manifest carries `LEANBACK_LAUNCHER`. Without it the app does"
+            push l "  not appear on a TV at all."
+        }
+        if (StarterText.includes(devices "wear")) {
+            push l "- **Wear:** `minSdk` is 30. Wear OS 3 is API 30, and a lower minimum will not"
+            push l "  install."
+        }
+        plan.addSection((PlanSection.about("AGENTS.md" "surface-android" 340 (StarterText.joinWith(l "\n")) id)))
+    }
+
+    fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addCheck((PlanCheck.atLeast("Android" "java" "java" 17 "Gradle and the Android plugin need JDK 17 or later.")))
+        plan.addCheck((PlanCheck.tool("Android" "gradle" "gradle" "The build runs `gradle assembleDebug` in platforms/android. A wrapper is not generated, so Gradle has to be on PATH.")))
+
+        ; The SDK is a directory named by an environment variable, not a program.
+        ; `sdkmanager` and `adb` are the things that end up on PATH when it is
+        ; installed, so they are what can honestly be checked.
+        def sdk:PlanCheck (PlanCheck.tool("Android" "Android SDK" "sdkmanager" "Set ANDROID_HOME and put cmdline-tools on PATH. Compiling Ranger to Kotlin needs none of this; assembling the APK does."))
+        sdk.optional = true
+        plan.addCheck(sdk)
+        def adb:PlanCheck (PlanCheck.tool("Android" "adb" "adb" "Needed to install on a device or emulator, not to build."))
+        adb.optional = true
+        plan.addCheck(adb)
+    }
+
+    fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
+        plan.addSkill("ranger-lang")
+        plan.addSkill("ranger-build")
+    }
+}
