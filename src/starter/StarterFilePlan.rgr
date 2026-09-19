@@ -256,6 +256,48 @@ class FilePlan {
         return next
     }
 
+    ; The plan as data, for `plan --json`.
+    ;
+    ; It is the SAME value the text form renders, not a separate description of
+    ; it, so an agent that reads this and then runs `apply` is reading what will
+    ; happen. `contents` is deliberately left out: a plan is a decision list, and
+    ; a caller that wants the bytes can read the file after applying.
+    fn asJson:JsonValue () {
+        def root:JsonValue (JsonValue.newObject())
+        root.putKey("schema" (JsonValue.fromInt(1)))
+        root.putKey("summary" (JsonValue.fromText((this.summary()))))
+        root.putKey("noop" (JsonValue.fromBool((this.isNoOp()))))
+
+        def list:JsonValue (JsonValue.newArray())
+        for actions a:FileAction i {
+            def entry:JsonValue (JsonValue.newObject())
+            entry.putKey("action" (JsonValue.fromText(a.kind)))
+            entry.putKey("path" (JsonValue.fromText(a.path)))
+            entry.putKey("writes" (JsonValue.fromBool((a.writesFile()))))
+            if ((strlen a.ownership) > 0) {
+                entry.putKey("ownership" (JsonValue.fromText(a.ownership)))
+            }
+            entry.putKey("profile" (JsonValue.fromText(a.profile)))
+            if ((strlen a.note) > 0) {
+                entry.putKey("note" (JsonValue.fromText(a.note)))
+            }
+            list.addItem(entry)
+        }
+        root.putKey("actions" list)
+
+        def problemList:JsonValue (JsonValue.newArray())
+        for problems p:StarterProblem i {
+            def entry:JsonValue (JsonValue.newObject())
+            entry.putKey("severity" (JsonValue.fromText(p.severity)))
+            entry.putKey("path" (JsonValue.fromText(p.path)))
+            entry.putKey("message" (JsonValue.fromText(p.message)))
+            problemList.addItem(entry)
+        }
+        root.putKey("problems" problemList)
+        root.putKey("ok" (JsonValue.fromBool(((this.hasErrors()) == false))))
+        return root
+    }
+
     ; The human summary under the listing.
     fn summary:string () {
         def parts:[string]

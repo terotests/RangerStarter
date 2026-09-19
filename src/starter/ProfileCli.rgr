@@ -118,6 +118,7 @@ class ProfileCli extends StarterProfile {
                 continue
             }
             def check:PlanCheck (PlanCheck.tool("Command line" ((targets.languageFlagOf(t)) + " toolchain") program (ProfileCli.hintFor(t))))
+            check.asksWith((ProfileCli.versionArgsFor(program)))
             ; Generating the code needs none of these -- only running or building
             ; the output does -- so a missing one is a warning.
             check.optional = true
@@ -178,6 +179,31 @@ class ProfileCli extends StarterProfile {
         return ""
     }
 
+    ; How each toolchain wants to be asked. `--version` is not universal: `go`
+    ; rejects it outright and prints "flag provided but not defined", which a
+    ; doctor would otherwise report as a version string.
+    sfn versionArgsFor:[string] (program:string) {
+        def out:[string]
+        switch program {
+            case "go" {
+                push out "version"
+            }
+            case "javac" {
+                push out "-version"
+            }
+            case "kotlinc" {
+                push out "-version"
+            }
+            case "scalac" {
+                push out "-version"
+            }
+            default {
+                push out "--version"
+            }
+        }
+        return out
+    }
+
     sfn hintFor:string (target:string) {
         switch target {
             case "llvm" {
@@ -192,6 +218,6 @@ class ProfileCli extends StarterProfile {
 
     fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
         plan.addSkill("ranger-lang")
-        plan.addSkill("ranger-start")
+        plan.addSkill("ranger-build")
     }
 }

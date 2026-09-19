@@ -213,7 +213,8 @@ class StarterMain {
         }
         def cfg:StarterConfig load.config
         def targets:StarterTargets (StarterMain.loadTargets(host))
-        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        def assets:StarterAssets (host.loadAssets())
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
         if (project.hasErrors()) {
             print "ranger-starter: this configuration cannot be generated."
             StarterMain.printProblems(project.problems)
@@ -221,6 +222,16 @@ class StarterMain {
         }
         def disk:DiskState (host.snapshot(project))
         def filePlan:FilePlan (StarterGenerator.plan(project disk))
+        if (args.has("json")) {
+            ; The same value the text form renders. An agent that reads this and
+            ; then runs `apply` is reading what will happen, not a description of
+            ; it.
+            print ((filePlan.asJson()).asText())
+            if (filePlan.hasErrors()) {
+                return 1
+            }
+            return 0
+        }
         print (filePlan.asText())
         print (filePlan.problemsText())
         print ((filePlan.summary()) + ". Nothing was written.")
@@ -239,7 +250,8 @@ class StarterMain {
         }
         def cfg:StarterConfig load.config
         def targets:StarterTargets (StarterMain.loadTargets(host))
-        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        def assets:StarterAssets (host.loadAssets())
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
         if (project.hasErrors()) {
             print "ranger-starter: this configuration cannot be generated."
             StarterMain.printProblems(project.problems)
@@ -354,6 +366,58 @@ class StarterMain {
         return 0
     }
 
+    ; What to report as this check's version: the program's own answer, or -- for a
+    ; file check -- a key read out of the file.
+    sfn versionFor:string (host:StarterHost check:PlanCheck) {
+        if ((check.looksForFile()) == false) {
+            return (host.versionTextOf(check.program check.versionArgs))
+        }
+        if ((host.exists(check.pathToFind)) == false) {
+            return ""
+        }
+        if ((strlen check.versionKey) == 0) {
+            return "present"
+        }
+        def parser (new StarterJson())
+        def root:JsonValue (parser.parse((host.readText(check.pathToFind))))
+        if ((parser.ok()) == false) {
+            return "present"
+        }
+        def value:string (root.getText(check.versionKey "")) 
+        if ((strlen value) == 0) {
+            return "present"
+        }
+        return value
+    }
+
+    ; One check's verdict. Computed once and then either printed or serialised, so
+    ; `doctor` and `doctor --json` cannot disagree.
+    ; Takes the platform NAME rather than the host, so the whole verdict rule is a
+    ; pure function of three values and the tests can cover it -- including the
+    ; cases this machine cannot be in, like an iOS check on Linux.
+    sfn checkVerdict:string (platform:string check:PlanCheck version:string) {
+        if ((strlen check.onlyOn) > 0) {
+            if (platform != check.onlyOn) {
+                return "unavailable"
+            }
+        }
+        if ((strlen version) == 0) {
+            if check.optional {
+                return "optional"
+            }
+            return "missing"
+        }
+        if (check.minMajor > 0) {
+            def major:int (StarterText.firstNumber(version))
+            if (major >= 0) {
+                if (major < check.minMajor) {
+                    return "too-old"
+                }
+            }
+        }
+        return "ok"
+    }
+
     sfn commandDoctor:int (host:StarterHost args:StarterArgs) {
         def path:string (args.value("config" (StarterMain.configPath())))
         def load:StarterConfigLoad (StarterMain.loadConfig(host path))
@@ -363,36 +427,89 @@ class StarterMain {
         }
         def cfg:StarterConfig load.config
         def targets:StarterTargets (StarterMain.loadTargets(host))
-        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
-        print ("Ranger project doctor -- " + (cfg.projectName()))
-        print ""
+        def assets:StarterAssets (host.loadAssets())
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
+
+        def wantJson:boolean (args.has("json"))
         def actionable:int 0
+        def jsonGroups:JsonValue (JsonValue.newArray())
+
+        if (wantJson == false) {
+            print ("Ranger project doctor -- " + (cfg.projectName()))
+            print ""
+        }
+
         def groups:[string] (project.checkGroups())
         for groups group:string gi {
-            print group
+            if (wantJson == false) {
+                print group
+            }
+            def jsonChecks:JsonValue (JsonValue.newArray())
             for project.checks c:PlanCheck ci {
                 if (c.group != group) {
                     continue
                 }
-                def found:boolean (host.hasProgram(c.program))
-                if found {
-                    print ("  ok        " + c.label + "  (" + c.program + ")")
-                } {
-                    if c.optional {
-                        print ("  optional  " + c.label + "  -- " + c.program + " is not on PATH")
-                        print ("            " + c.hint)
-                    } {
-                        print ("  MISSING   " + c.label + "  -- " + c.program + " is not on PATH")
-                        print ("            " + c.hint)
-                        actionable = actionable + 1
+                ; ONE process per check: the version text answers both "is it
+                ; there" and "which one is it".
+                def version:string (StarterMain.versionFor(host c))
+                def verdict:string (StarterMain.checkVerdict((host.platform()) c version))
+                if (verdict == "missing") {
+                    actionable = actionable + 1
+                }
+                if (verdict == "too-old") {
+                    actionable = actionable + 1
+                }
+                if wantJson {
+                    def entry:JsonValue (JsonValue.newObject())
+                    entry.putKey("label" (JsonValue.fromText(c.label)))
+                    entry.putKey("program" (JsonValue.fromText(c.program)))
+                    entry.putKey("verdict" (JsonValue.fromText(verdict)))
+                    entry.putKey("version" (JsonValue.fromText(version)))
+                    entry.putKey("optional" (JsonValue.fromBool(c.optional)))
+                    if (c.minMajor > 0) {
+                        entry.putKey("minMajor" (JsonValue.fromInt(c.minMajor)))
                     }
+                    if (verdict != "ok") {
+                        entry.putKey("hint" (JsonValue.fromText(c.hint)))
+                    }
+                    jsonChecks.addItem(entry)
+                } {
+                    StarterMain.printCheck(c verdict version)
                 }
             }
-            print ""
+            if wantJson {
+                def entry:JsonValue (JsonValue.newObject())
+                entry.putKey("group" (JsonValue.fromText(group)))
+                entry.putKey("checks" jsonChecks)
+                jsonGroups.addItem(entry)
+            } {
+                print ""
+            }
         }
+
+        if wantJson {
+            def root:JsonValue (JsonValue.newObject())
+            root.putKey("schema" (JsonValue.fromInt(1)))
+            root.putKey("project" (JsonValue.fromText((cfg.projectName()))))
+            root.putKey("platform" (JsonValue.fromText((host.platform()))))
+            root.putKey("targetSource" (JsonValue.fromText(targets.source)))
+            root.putKey("groups" jsonGroups)
+            root.putKey("actionable" (JsonValue.fromInt(actionable)))
+            root.putKey("ok" (JsonValue.fromBool((actionable == 0))))
+            print (root.asText())
+            if (actionable == 0) {
+                return 0
+            }
+            return 1
+        }
+
         if (targets.source == "bundled") {
             print "note: this compiler does not answer `rgrc -targets -json`, so the target"
             print "      list is the one bundled with ranger-starter."
+            print ""
+        }
+        if ((strlen assets.problem) > 0) {
+            print ("note: " + assets.problem)
             print ""
         }
         if (actionable == 0) {
@@ -401,6 +518,34 @@ class StarterMain {
         }
         print ((to_string actionable) + " actionable problem(s)")
         return 1
+    }
+
+    sfn printCheck:void (c:PlanCheck verdict:string version:string) {
+        def label:string (StarterText.padRight(c.label 26))
+        switch verdict {
+            case "ok" {
+                print ("  ok        " + label + version)
+            }
+            case "optional" {
+                print ("  optional  " + label + "not on PATH (" + c.program + ")")
+                print ("            " + c.hint)
+            }
+            case "unavailable" {
+                print ("  -         " + label + "not available on " + c.onlyOn + " builds from here")
+            }
+            case "too-old" {
+                print ("  TOO OLD   " + label + version + " -- needs " + (to_string c.minMajor) + " or later")
+                print ("            " + c.hint)
+            }
+            default {
+                if (c.looksForFile()) {
+                    print ("  MISSING   " + label + "not found (" + c.pathToFind + ")")
+                } {
+                    print ("  MISSING   " + label + "not on PATH (" + c.program + ")")
+                }
+                print ("            " + c.hint)
+            }
+        }
     }
 
     sfn commandTargets:int (host:StarterHost args:StarterArgs) {

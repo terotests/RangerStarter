@@ -183,6 +183,6 @@ class ProfileLibrary extends StarterProfile {
 
     fn contributeSkills:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
         plan.addSkill("ranger-lang")
-        plan.addSkill("ranger-start")
+        plan.addSkill("ranger-build")
     }
 }

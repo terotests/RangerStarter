@@ -19,13 +19,17 @@
 Import "StarterProfiles.rgr"
 Import "StarterTemplates.rgr"
 Import "StarterMarkdown.rgr"
+Import "StarterAssets.rgr"
 
 class StarterPlanner {
 
     Constructor () {
     }
 
-    sfn plan:ProjectPlan (cfg:StarterConfig targets:StarterTargets) {
+    ; `assets` is what the tool ships -- the skill texts. It is an INPUT rather
+    ; than something the planner reads from disk, for the same reason `DiskState`
+    ; is: the planner has to stay a function.
+    sfn plan:ProjectPlan (cfg:StarterConfig targets:StarterTargets assets:StarterAssets) {
         def out (new ProjectPlan())
         def profiles:StarterProfiles (StarterProfiles.registry())
 
@@ -62,7 +66,8 @@ class StarterPlanner {
         StarterPlanner.addCoreScripts(cfg out)
         StarterPlanner.addCoreChecks(cfg out targets)
         StarterPlanner.addDocs(cfg out)
-        StarterPlanner.addCoreSections(cfg out targets profiles)
+        StarterPlanner.addSkills(cfg out assets)
+        StarterPlanner.addCoreSections(cfg out targets profiles assets)
         StarterPlanner.addCoreFiles(cfg out targets)
         StarterPlanner.addMarkdown(cfg out)
         StarterPlanner.addInstall(out)
@@ -176,8 +181,16 @@ class StarterPlanner {
     }
 
     sfn addCoreChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
-        plan.addCheck((PlanCheck.tool("Ranger" "node" "node" "Ranger's compiler is an npm package, so node is the one hard requirement. Version 18 or later.")))
-        plan.addCheck((PlanCheck.tool("Ranger" "the compiler" "npx" "`npm install` puts `ranger-compiler` in node_modules. Nothing is installed globally.")))
+        ; node is the one hard requirement, and the only tool here whose version
+        ; string this program claims to understand: `v22.1.0`, so the first number
+        ; is the major.
+        plan.addCheck((PlanCheck.atLeast("Ranger" "node" "node" 18 "Ranger's compiler is an npm package, so node is the one hard requirement. Install Node 18 or later.")))
+        ; Not a program check. `npx --version` answers npm's version, and
+        ; `npx --no-install rgrc` answers an npm ERROR when the package is absent
+        ; -- both of which a version reader would report as a version. The
+        ; compiler is a directory in node_modules, so the doctor looks for it and
+        ; reads the version out of its own manifest.
+        plan.addCheck((PlanCheck.file("Ranger" "ranger-compiler" "node_modules/ranger-compiler/package.json" "version" "`npm install` puts the compiler in node_modules. Nothing is installed globally.")))
     }
 
     sfn addDocs:void (cfg:StarterConfig plan:ProjectPlan) {
@@ -238,9 +251,42 @@ class StarterPlanner {
         plan.addSection((PlanSection.about("AGENTS.md" "docs" 700 (StarterText.joinWith(l "\n")) "core")))
     }
 
+    ; --- skills ---------------------------------------------------------------
+    ;
+    ; A profile asks for a skill by name. It is installed only if the tool ships
+    ; it, which is what `skills: "auto"` means -- and the ones that are NOT
+    ; shipped are dropped from the plan's list too, so CLAUDE.md never advertises
+    ; a skill that is not on disk.
+    sfn addSkills:void (cfg:StarterConfig plan:ProjectPlan assets:StarterAssets) {
+        if ((cfg.skillsMode()) == "none") {
+            plan.skills = (StarterPlanner.emptyNames())
+            return
+        }
+        def kept:[string]
+        for (StarterText.sorted(plan.skills)) name:string i {
+            if ((assets.hasSkill(name)) == false) {
+                continue
+            }
+            push kept name
+            def path:string (".claude/skills/" + name + "/SKILL.md")
+            plan.addFile((PlanFile.generated(path (assets.skillText(name)) "core")))
+        }
+        plan.skills = kept
+        if ((array_length kept) == 0) {
+            if ((strlen assets.problem) > 0) {
+                plan.addProblem((StarterProblem.warn("agents.skills" assets.problem)))
+            }
+        }
+    }
+
+    sfn emptyNames:[string] () {
+        def out:[string]
+        return out
+    }
+
     ; --- core sections --------------------------------------------------------
 
-    sfn addCoreSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets profiles:StarterProfiles) {
+    sfn addCoreSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets profiles:StarterProfiles assets:StarterAssets) {
         def name:string (cfg.projectName())
         def kind:string (cfg.projectKind())
         def surfaces:[string] (cfg.enabledSurfaceIds())
@@ -292,7 +338,7 @@ class StarterPlanner {
             StarterPlanner.addAgentsSections(cfg plan targets)
         }
         if (cfg.wantsClaudeMd()) {
-            StarterPlanner.addClaudeSections(cfg plan)
+            StarterPlanner.addClaudeSections(cfg plan assets)
         }
     }
 
@@ -399,7 +445,7 @@ class StarterPlanner {
         plan.addSection((PlanSection.about("AGENTS.md" "agents-license" 900 (StarterText.joinWith(lic "\n")) "core")))
     }
 
-    sfn addClaudeSections:void (cfg:StarterConfig plan:ProjectPlan) {
+    sfn addClaudeSections:void (cfg:StarterConfig plan:ProjectPlan assets:StarterAssets) {
         def l:[string]
         push l "# Claude Code in this project"
         push l ""
@@ -407,13 +453,20 @@ class StarterPlanner {
         push l "the Ranger syntax traps and the generated-file policy; this file only has what"
         push l "is specific to working here with skills."
         push l ""
-        push l "Skills that load with this project:"
-        push l ""
         def skills:[string] (StarterText.sorted(plan.skills))
-        for skills s:string i {
-            push l ("- **" + s + "**")
+        if ((array_length skills) > 0) {
+            push l "Skills that load with this project, from `.claude/skills/`:"
+            push l ""
+            for skills s:string i {
+                def about:string (assets.skillAbout(s))
+                if ((strlen about) > 0) {
+                    push l ("- **" + s + "** — " + about)
+                } {
+                    push l ("- **" + s + "**")
+                }
+            }
+            push l ""
         }
-        push l ""
         push l "`ranger.project.json` is the source of truth for what this project builds. Do"
         push l "not hand-edit a file listed in `.ranger/generated.json`; change the"
         push l "configuration and run `npm run plan`, then `npm run setup -- --apply`."
@@ -426,6 +479,20 @@ class StarterPlanner {
         plan.addFile((PlanFile.generated(".gitignore" (StarterTemplates.gitignore()) "core")))
         plan.addFile((PlanFile.structured("package.json" (StarterPlanner.packageJson(cfg plan)) "core")))
         plan.addFile((PlanFile.structured("ranger.json" (StarterPlanner.rangerJson(cfg)) "core")))
+        if (cfg.wantsGithubCi()) {
+            def names:[string]
+            for (plan.scriptsByName()) sc:PlanScript i {
+                push names sc.name
+            }
+            def docsCheck:boolean false
+            if (cfg.docsEnabled()) {
+                if (cfg.docsApi()) {
+                    docsCheck = true
+                }
+            }
+            def multi:boolean (((array_length (cfg.allTargetIds())) > 1))
+            plan.addFile((PlanFile.generated(".github/workflows/ci.yml" (StarterTemplates.githubWorkflow(names docsCheck multi)) "core")))
+        }
     }
 
     sfn packageJson:string (cfg:StarterConfig plan:ProjectPlan) {

@@ -202,7 +202,28 @@ class PlanCheck {
     ; A check whose absence is a warning rather than a problem.
     def optional:boolean false
 
+    ; The lowest major version that will do. `minMajor` is 0 for "report it, do not judge it", which is the honest
+    ; default: `node --version` is `v22.1.0` and `go version` is
+    ; `go version go1.22.1`, and a checker that pretends to understand every
+    ; tool's format would be wrong about most of them. The version TEXT is shown
+    ; either way, because that is what somebody debugging a build wants to see.
+    ; How to ask, as an argument LIST rather than one flag: `go version` takes no
+    ; dash at all, `javac -version` takes one, `npx --no-install rgrc` takes three.
+    ; A single string could not spell any of those but the middle one.
+    def versionArgs:[string]
+    def minMajor:int 0
+
+    ; Some things are not programs. `ranger-compiler` is a directory in
+    ; `node_modules`, and asking `npx` about it answers npm's version when it is
+    ; installed and an npm ERROR MESSAGE when it is not -- which a version reader
+    ; cannot tell from a version. When `pathToFind` is set the check is satisfied
+    ; by that path existing, and `versionKey` names a key in it (it is JSON) to
+    ; report as the version.
+    def pathToFind:string ""
+    def versionKey:string ""
+
     Constructor () {
+        push versionArgs "--version"
     }
 
     sfn tool:PlanCheck (group:string label:string program:string hint:string) {
@@ -212,6 +233,30 @@ class PlanCheck {
         c.program = program
         c.hint = hint
         return c
+    }
+
+    sfn atLeast:PlanCheck (group:string label:string program:string minMajor:int hint:string) {
+        def c:PlanCheck (PlanCheck.tool(group label program hint))
+        c.minMajor = minMajor
+        return c
+    }
+
+    fn asksWith:void (args:[string]) {
+        versionArgs = args
+    }
+
+    sfn file:PlanCheck (group:string label:string path:string versionKey:string hint:string) {
+        def c (new PlanCheck())
+        c.group = group
+        c.label = label
+        c.hint = hint
+        c.pathToFind = path
+        c.versionKey = versionKey
+        return c
+    }
+
+    fn looksForFile:boolean () {
+        return ((strlen pathToFind) > 0)
     }
 }
 

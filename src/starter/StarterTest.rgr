@@ -20,6 +20,8 @@ Import "StarterTargets.rgr"
 Import "StarterText.rgr"
 Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
+Import "StarterMain.rgr"
+Import "StarterAssets.rgr"
 
 class StarterCheck {
 
@@ -286,6 +288,25 @@ class StarterTest {
         return (StarterTargets.bundled())
     }
 
+    ; The skills a test pretends the tool ships. Two of them, with bodies short
+    ; enough to read, because what is being tested is which ones get installed --
+    ; not what they say.
+    sfn assets:StarterAssets () {
+        def a (new StarterAssets())
+        set a.skills "ranger-lang" "# ranger-lang\n\nThe syntax traps.\n"
+        set a.about "ranger-lang" "The Ranger syntax traps."
+        set a.skills "ranger-build" "# ranger-build\n\nThe build loop.\n"
+        set a.about "ranger-build" "The build loop in a generated project."
+        return a
+    }
+
+    ; A tool that shipped nothing: a clone that was never built.
+    sfn noAssets:StarterAssets () {
+        def a (new StarterAssets())
+        a.problem = "no skills to install"
+        return a
+    }
+
     sfn cliConfig:StarterConfig () {
         def cfg:StarterConfig (StarterConfig.defaults("northwind" "application"))
         cfg.setEnabled("cli" true)
@@ -299,12 +320,12 @@ class StarterTest {
     }
 
     sfn planFor:FilePlan (cfg:StarterConfig disk:DiskState) {
-        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled())))
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
         return (StarterGenerator.plan(project disk))
     }
 
     sfn projectFor:ProjectPlan (cfg:StarterConfig) {
-        return (StarterPlanner.plan(cfg (StarterTest.bundled())))
+        return (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
     }
 
     ; The golden plan. It is written out in full, deliberately: this is the shape
@@ -314,6 +335,9 @@ class StarterTest {
         def disk (new DiskState())
         def filePlan:FilePlan (StarterTest.planFor((StarterTest.cliConfig()) disk))
         def want:[string]
+        push want "create    .claude/skills/ranger-build/SKILL.md"
+        push want "create    .claude/skills/ranger-lang/SKILL.md"
+        push want "create    .github/workflows/ci.yml"
         push want "create    .gitignore"
         push want "create    AGENTS.md"
         push want "create    CLAUDE.md"
@@ -325,8 +349,8 @@ class StarterTest {
         push want "create    src/MainTest.rgr                   a starting point; yours once it is written"
         t.eqStr("the plan for an empty directory" (filePlan.asText()) ((StarterText.joinWith(want "\n")) + "\n"))
         t.eqStr("and nothing to complain about" (filePlan.problemsText()) "")
-        t.eqStr("summary" (filePlan.summary()) "9 to create")
-        t.isFalse("a plan that creates nine files is not a no-op" (filePlan.isNoOp()))
+        t.eqStr("summary" (filePlan.summary()) "12 to create")
+        t.isFalse("a plan that creates twelve files is not a no-op" (filePlan.isNoOp()))
     }
 
     ; The M2 property: applying twice changes nothing the second time.
@@ -593,6 +617,156 @@ class StarterTest {
         t.isTrue("kotlin packaging carries its package name" (contains (StarterTest.commandOf(libPlan "package:kotlin")) "-ktpackage=com.example.northwind"))
     }
 
+    ; Skills are installed only when the tool ships them, and CLAUDE.md never
+    ; advertises one that is not on disk.
+    sfn testSkills:void (t:StarterCheck) {
+        def cfg:StarterConfig (StarterTest.cliConfig())
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.eqList("the skills the profiles asked for and the tool ships" (StarterText.sorted(project.skills)) "ranger-build,ranger-lang")
+        def langFile@(optional):PlanFile (project.fileAt(".claude/skills/ranger-lang/SKILL.md"))
+        t.isTrue("each one is a file in the plan" ((null? langFile) == false))
+        if ((null? langFile) == false) {
+            def f:PlanFile (unwrap langFile)
+            t.eqStr("with the shipped text" f.contents "# ranger-lang\n\nThe syntax traps.\n")
+        }
+        def claude@(optional):PlanFile (project.fileAt("CLAUDE.md"))
+        t.isTrue("CLAUDE.md is planned" ((null? claude) == false))
+        if ((null? claude) == false) {
+            def c:PlanFile (unwrap claude)
+            t.isTrue("and lists the skill with what it is for" (contains c.contents "**ranger-lang** — The Ranger syntax traps."))
+        }
+
+        ; `ranger-docs` is asked for when documentation is on, and this tool does
+        ; not ship it. It must not appear in the plan or in CLAUDE.md.
+        t.isFalse("a skill the tool does not ship is not listed" (StarterText.includes(project.skills "ranger-docs")))
+        def docsSkill@(optional):PlanFile (project.fileAt(".claude/skills/ranger-docs/SKILL.md"))
+        t.isTrue("and no file is planned for it" (null? docsSkill))
+
+        ; A tool that shipped nothing says so, and still plans the project.
+        def bare:ProjectPlan (StarterPlanner.plan((StarterTest.cliConfig()) (StarterTest.bundled()) (StarterTest.noAssets())))
+        t.isFalse("an unbuilt tool is not an error" (bare.hasErrors()))
+        t.eqInt("it installs no skills" (array_length bare.skills) 0)
+        t.isTrue("and still plans the project" ((array_length bare.files) > 0))
+        def warned:boolean false
+        for bare.problems p:StarterProblem i {
+            if (p.path == "agents.skills") {
+                warned = true
+            }
+        }
+        t.isTrue("with a warning that says why" warned)
+
+        ; `skills: "none"` is a choice, not a failure, so it warns about nothing.
+        def off:StarterConfig (StarterTest.cliConfig())
+        off.setAgents(true true "none")
+        def offPlan:ProjectPlan (StarterPlanner.plan(off (StarterTest.bundled()) (StarterTest.assets())))
+        t.eqInt("skills: none installs none" (array_length offPlan.skills) 0)
+        t.eqInt("and warns about nothing" (array_length offPlan.problems) 0)
+    }
+
+    sfn testGithubWorkflow:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def ci@(optional):PlanFile (project.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("a workflow is generated" ((null? ci) == false))
+        if (null? ci) {
+            return
+        }
+        def f:PlanFile (unwrap ci)
+        t.isTrue("it installs rather than npm ci, having no lockfile" (contains f.contents "run: npm install"))
+        ; `run: npm ci`, not bare "npm ci": the comment above the step explains why
+        ; it is not used, and naming it there must not fail this.
+        t.isFalse("and does not run npm ci" (contains f.contents "run: npm ci"))
+        t.isTrue("it runs the tests" (contains f.contents "run: npm test"))
+        t.isTrue("it builds the second target" (contains f.contents "npm run build:go"))
+        t.isTrue("and checks the documentation, which is on" (contains f.contents "npm run docs:check"))
+
+        ; Turning CI off removes the file, which is the managed-removal path for a
+        ; generated file rather than a surface.
+        def noCi:StarterConfig (StarterTest.cliConfig())
+        noCi.setCi(false false)
+        def without:ProjectPlan (StarterTest.projectFor(noCi))
+        def gone@(optional):PlanFile (without.fileAt(".github/workflows/ci.yml"))
+        t.isTrue("and turning CI off does not plan one" (null? gone))
+    }
+
+    sfn testPlanJson:void (t:StarterCheck) {
+        def disk (new DiskState())
+        def filePlan:FilePlan (StarterTest.planFor((StarterTest.cliConfig()) disk))
+        def root:JsonValue (filePlan.asJson())
+        t.eqInt("the schema" (root.getInt("schema" 0)) 1)
+        t.isTrue("it is ok" (root.getBool("ok" false)))
+        t.isFalse("and not a no-op" (root.getBool("noop" true)))
+        def actions:JsonValue (root.getArray("actions"))
+        t.eqInt("one entry per action" (actions.itemCount()) (array_length filePlan.actions))
+        def first:JsonValue (itemAt actions.items 0)
+        t.eqStr("carrying the action" (first.getText("action" "")) "create")
+        t.eqStr("and the path" (first.getText("path" "")) ".claude/skills/ranger-build/SKILL.md")
+        t.isTrue("and whether it writes" (first.getBool("writes" false)))
+        ; It must be real JSON, because an agent parses it.
+        def parser (new StarterJson())
+        def reparsed:JsonValue (parser.parse((root.asText())))
+        t.isTrue("and the whole thing parses back" (parser.ok()))
+        t.eqInt("with the actions intact" ((reparsed.getArray("actions")).itemCount()) (array_length filePlan.actions))
+    }
+
+    sfn testVersionReading:void (t:StarterCheck) {
+        t.eqInt("node prints v22.1.0" (StarterText.firstNumber("v22.1.0")) 22)
+        t.eqInt("python prints Python 3.12.1" (StarterText.firstNumber("Python 3.12.1")) 3)
+        t.eqInt("go prints go version go1.22.1" (StarterText.firstNumber("go version go1.22.1")) 1)
+        t.eqInt("something with no number at all" (StarterText.firstNumber("no version here")) -1)
+        t.eqStr("a banner with several lines answers the first" (StarterText.firstLine("\n\nfirst line\nsecond\n")) "first line")
+        t.eqStr("and an empty one answers nothing" (StarterText.firstLine("")) "")
+    }
+
+    ; The doctor's verdict rule, including the cases this machine cannot be in.
+    sfn testDoctorVerdicts:void (t:StarterCheck) {
+        def node:PlanCheck (PlanCheck.atLeast("Ranger" "node" "node" 18 "install Node 18 or later"))
+        t.eqStr("a new enough node" (StarterMain.checkVerdict("linux" node "v22.1.0")) "ok")
+        t.eqStr("an old node is actionable" (StarterMain.checkVerdict("linux" node "v16.20.0")) "too-old")
+        t.eqStr("a missing node" (StarterMain.checkVerdict("linux" node "")) "missing")
+
+        ; A version string the reader cannot parse must not be called too old.
+        t.eqStr("an unparseable version is accepted" (StarterMain.checkVerdict("linux" node "some build")) "ok")
+
+        def optionalTool:PlanCheck (PlanCheck.tool("Command line" "go toolchain" "go" "needed to build the go output"))
+        optionalTool.optional = true
+        t.eqStr("a missing optional tool is not actionable" (StarterMain.checkVerdict("linux" optionalTool "")) "optional")
+        t.eqStr("and a present one is fine" (StarterMain.checkVerdict("linux" optionalTool "go version go1.24")) "ok")
+
+        ; The case that matters for iOS: generating on Linux is correct, building
+        ; there is not possible, and that is not a missing tool.
+        def macOnly:PlanCheck (PlanCheck.tool("iOS" "Xcode command line tools" "xcrun" "needs macOS"))
+        macOnly.onlyOn = "darwin"
+        t.eqStr("a mac-only check on linux is unavailable" (StarterMain.checkVerdict("linux" macOnly "")) "unavailable")
+        t.eqStr("and is checked normally on a mac" (StarterMain.checkVerdict("darwin" macOnly "")) "missing")
+        t.eqStr("and passes there when present" (StarterMain.checkVerdict("darwin" macOnly "xcrun version 64")) "ok")
+    }
+
+    ; The compiler is looked for as a FILE, because asking npx about it answers
+    ; npm's version when it is there and an npm error when it is not.
+    sfn testCompilerCheckIsAFileCheck:void (t:StarterCheck) {
+        def project:ProjectPlan (StarterTest.projectFor((StarterTest.cliConfig())))
+        def found:boolean false
+        for project.checks c:PlanCheck i {
+            if (c.label == "ranger-compiler") {
+                found = true
+                t.isTrue("it looks for a file" (c.looksForFile()))
+                t.eqStr("in node_modules" c.pathToFind "node_modules/ranger-compiler/package.json")
+                t.eqStr("and reports the version from its manifest" c.versionKey "version")
+                t.isFalse("it is not optional: nothing builds without it" c.optional)
+            }
+            if (c.label == "node") {
+                t.eqInt("node must be 18 or later" c.minMajor 18)
+            }
+        }
+        t.isTrue("the compiler is checked" found)
+
+        ; `go version`, not `go --version`, which go rejects outright.
+        def goArgs:[string] (ProfileCli.versionArgsFor("go"))
+        t.eqList("go is asked the way go wants" goArgs "version")
+        t.eqList("and everything else the usual way" (ProfileCli.versionArgsFor("cargo")) "--version")
+        t.eqList("javac takes one dash" (ProfileCli.versionArgsFor("javac")) "-version")
+    }
+
     sfn commandOf:string (project:ProjectPlan name:string) {
         for (project.scriptsByName()) s:PlanScript i {
             if (s.name == name) {
@@ -680,6 +854,12 @@ class StarterTest {
         StarterTest.testPackageJsonMerge(t)
         StarterTest.testMarkdownMerge(t)
         StarterTest.testMarkdownUnterminatedMarker(t)
+        StarterTest.testSkills(t)
+        StarterTest.testGithubWorkflow(t)
+        StarterTest.testPlanJson(t)
+        StarterTest.testVersionReading(t)
+        StarterTest.testDoctorVerdicts(t)
+        StarterTest.testCompilerCheckIsAFileCheck(t)
         t.report("the starter core")
     }
 }

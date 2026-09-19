@@ -1,0 +1,107 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterAssets -- files the TOOL ships, handed to the planner as data.
+;
+; Some generated files are not templates: a skill's SKILL.md is prose that lives
+; in `templates/` beside the compiled CLI and is copied into the project. The
+; planner still has to see its CONTENT, because a generated file is fingerprinted
+; and a fingerprint needs bytes.
+;
+; So the host reads them before planning and hands them over, exactly as it hands
+; over a `DiskState`. The planner stays pure, the tests supply their own assets,
+; and a skill that the package does not ship is simply not offered -- which is
+; what `skills: "auto"` means.
+;
+; `templates/skills/INDEX.json` is what makes the set self-describing: adding a
+; skill is a directory and one entry, with no code change anywhere.
+
+Import "StarterJson.rgr"
+Import "StarterText.rgr"
+
+class StarterAssets {
+
+    ; Keyed by the name a profile asks for -- "ranger-lang" -- and holding the
+    ; SKILL.md text.
+    def skills:[string:string]
+
+    ; What each skill is for, from the index. Shown by `doctor` and written into
+    ; CLAUDE.md, so an agent reading it knows why the skill is there.
+    def about:[string:string]
+
+    ; Set when the tool could not find its own `templates/` directory. Not an
+    ; error: a clone that has not been built, or a package installed with
+    ; `--ignore-scripts`, still configures projects -- it just cannot install
+    ; skills, and says so instead of silently omitting them.
+    def problem:string ""
+
+    Constructor () {
+    }
+
+    fn hasSkill:boolean (name:string) {
+        return (has skills name)
+    }
+
+    fn skillText:string (name:string) {
+        def hit@(optional):string (get skills name)
+        if (null? hit) {
+            return ""
+        }
+        return (unwrap hit)
+    }
+
+    fn skillAbout:string (name:string) {
+        def hit@(optional):string (get about name)
+        if (null? hit) {
+            return ""
+        }
+        return (unwrap hit)
+    }
+
+    fn skillNames:[string] () {
+        return (StarterText.sorted((keys skills)))
+    }
+
+    fn isEmpty:boolean () {
+        return ((array_length (keys skills)) == 0)
+    }
+
+    ; The names `templates/skills/INDEX.json` lists. The host reads this first so
+    ; it knows which SKILL.md files to look for.
+    sfn namesInIndex:[string] (indexText:string) {
+        def out:[string]
+        def parser (new StarterJson())
+        def root:JsonValue (parser.parse(indexText))
+        if ((parser.ok()) == false) {
+            return out
+        }
+        def list:JsonValue (root.getArray("skills"))
+        for list.items item:JsonValue i {
+            if ((item.isObject()) == false) {
+                continue
+            }
+            def name:string (item.getText("name" ""))
+            if ((strlen name) > 0) {
+                push out name
+            }
+        }
+        return out
+    }
+
+    sfn aboutInIndex:string (indexText:string name:string) {
+        def parser (new StarterJson())
+        def root:JsonValue (parser.parse(indexText))
+        if ((parser.ok()) == false) {
+            return ""
+        }
+        def list:JsonValue (root.getArray("skills"))
+        for list.items item:JsonValue i {
+            if ((item.isObject()) == false) {
+                continue
+            }
+            if ((item.getText("name" "")) == name) {
+                return (item.getText("about" ""))
+            }
+        }
+        return ""
+    }
+}

@@ -11,6 +11,7 @@
 
 Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
+Import "StarterHost.rgr"
 
 class StarterDump {
 
@@ -31,7 +32,11 @@ class StarterDump {
 
     sfn show:void (label:string cfg:StarterConfig) {
         def targets:StarterTargets (StarterTargets.bundled())
-        def project:ProjectPlan (StarterPlanner.plan(cfg targets))
+        ; The real skill texts, read from `templates/` the way the CLI reads them,
+        ; so a dump shows the skills a real apply would install.
+        def host (new StarterHost())
+        def assets:StarterAssets (host.loadAssets())
+        def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
         def disk (new DiskState())
         def filePlan:FilePlan (StarterGenerator.plan(project disk))
         print ""
