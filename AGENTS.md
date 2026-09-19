@@ -59,7 +59,7 @@ ranger.project.json  ->  StarterConfig  ->  ProjectPlan  ->  FilePlan  ->  disk
 ```
 
 Everything left of the last arrow is pure -- no filesystem, no terminal, no
-process -- which is why `npm run starter:test` runs 423 checks over plans and
+process -- which is why `npm run starter:test` runs 425 checks over plans and
 merges without touching a disk, and why it runs on **three targets**:
 
 ```bash
@@ -75,6 +75,7 @@ npm run starter:targets        # compiles the core to every target
 | `npm run starter:dump` | print a plan for a configuration built in code |
 | `npm run starter:frames` | the wizard's screens, drawn from a scripted key sequence |
 | `npm run wizard:shots` | regenerate the screenshots in `docs/WIZARD.md` |
+| `npm run desktop:shot` | a picture of the window the desktop surface generates, taken with no display |
 | `node bin/ranger-starter.js help` | the commands |
 
 The questionnaire is [`docs/WIZARD.md`](docs/WIZARD.md), screen by screen. Its

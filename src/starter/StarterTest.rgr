@@ -1126,6 +1126,10 @@ class StarterTest {
             ; SDL2 program looks broken.
             t.isTrue("the renderer falls back to software" (contains h.contents "SDL_RENDERER_SOFTWARE"))
             t.isTrue("and the runtime gets its argv" (contains h.contents "__g_argc"))
+            ; Exiting 0 does not prove anything was drawn. Reading the pixels
+            ; back out of the renderer does, and it needs no display at all.
+            t.isTrue("a frame can be written to a file" (contains h.contents "--shot"))
+            t.isTrue("by reading the renderer back" (contains h.contents "SDL_RenderReadPixels"))
         }
 
         def seed@(optional):PlanFile (project.fileAt("src/Shared.rgr"))

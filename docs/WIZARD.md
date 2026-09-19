@@ -218,6 +218,14 @@ Three more things worth knowing before they cost an afternoon:
 
 ### The desktop surface
 
+![the window the desktop surface generates](wizard/40-desktop-window.png)
+
+That picture was taken on a machine with **no display**. `SDL_RenderReadPixels`
+reads back what the renderer drew rather than what a screen showed, so
+`northwind 1 --shot window.bmp` under `SDL_VIDEODRIVER=dummy` is a real frame —
+which is the point, because "it exited 0" does not prove anything was drawn.
+`scripts/desktop-shot.sh` generates the project, builds it and takes the shot.
+
 `desktop/host/main.cpp` opens an SDL2 window, pumps events and draws a frame.
 The Ranger module is **included, not linked**: the C++ target emits one `.cpp`
 with the class definitions in it and no header to go with them, so the host
@@ -228,6 +236,8 @@ npm run desktop:compile   # Ranger -> C++
 npm run desktop:build     # and cmake
 npm run desktop:run       # and run it
 npm run desktop:smoke     # 30 frames with SDL_VIDEODRIVER=dummy -- no window
+
+./build/desktop-cmake/northwind 1 --shot window.bmp   # and a picture of it
 ```
 
 - **SDL2 is discovered two ways, and it has to be.** `find_package(SDL2)` finds
