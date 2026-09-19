@@ -1,0 +1,95 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterWizardFrames -- drive the wizard with a script of keys and print what it
+; draws.
+;
+;   npm run starter:frames
+;
+; This is the whole reason the wizard's state machine and its view are pure. The
+; pictures in the documentation are GENERATED from the code by this tool, so they
+; cannot drift from what the wizard actually draws -- and the same key scripts are
+; what the tests assert on, so a screenshot that changes is a test that fails.
+;
+; A key script is one string, split on spaces: a single character is that
+; character, and anything longer is a key name ("return", "space", "down"). No
+; key this wizard uses is a space, so there is no ambiguity.
+
+Import "StarterWizard.rgr"
+Import "StarterWizardView.rgr"
+
+class StarterWizardFrames {
+
+    Constructor () {
+    }
+
+    sfn press:void (w:StarterWizard script:string) {
+        if ((strlen script) == 0) {
+            return
+        }
+        def keys:[string] (strsplit script " ")
+        for keys key:string i {
+            if ((strlen key) == 0) {
+                continue
+            }
+            w.onKey(key)
+        }
+    }
+
+    sfn frame:void (w:StarterWizard label:string) {
+        print ("--- FRAME " + label + " ---")
+        def view (new StarterWizardView())
+        for (view.render(w)) line:string i {
+            print line
+        }
+        print "--- END ---"
+    }
+
+    ; The scripted walk the documentation shows. Each step is a key script and the
+    ; name of the frame it produces.
+    sfn m@(main):void () {
+        def cfg:StarterConfig (StarterConfig.defaults("" "application"))
+        def w:StarterWizard (StarterWizard.forConfig(cfg (StarterTargets.bundled())))
+
+        StarterWizardFrames.frame(w "01-name-empty")
+
+        StarterWizardFrames.press(w "n o r t h w i n d")
+        StarterWizardFrames.frame(w "02-name-typed")
+
+        StarterWizardFrames.press(w "return")
+        StarterWizardFrames.frame(w "03-kind")
+
+        StarterWizardFrames.press(w "return")
+        StarterWizardFrames.frame(w "04-surfaces")
+
+        ; Tick the command line surface, then walk down onto a surface this build
+        ; cannot generate and try to tick it. The refusal is part of the design:
+        ; the option is visible, and it says why.
+        StarterWizardFrames.press(w "space down down space")
+        StarterWizardFrames.frame(w "05-surfaces-unavailable")
+
+        StarterWizardFrames.press(w "return")
+        StarterWizardFrames.frame(w "06-targets")
+
+        StarterWizardFrames.press(w "space down space")
+        StarterWizardFrames.frame(w "07-targets-picked")
+
+        StarterWizardFrames.press(w "return")
+        StarterWizardFrames.frame(w "08-docs")
+
+        StarterWizardFrames.press(w "down down return")
+        StarterWizardFrames.frame(w "09-agents")
+
+        StarterWizardFrames.press(w "down return")
+        StarterWizardFrames.frame(w "10-ci")
+
+        StarterWizardFrames.press(w "return")
+        StarterWizardFrames.frame(w "11-review")
+
+        ; And the configuration those answers produce, which is the only thing the
+        ; wizard hands to the generator.
+        def answered:StarterConfig (w.configOf())
+        print "--- FRAME 12-config ---"
+        print (answered.asText())
+        print "--- END ---"
+    }
+}

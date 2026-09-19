@@ -1,0 +1,13 @@
+  Ranger project setup                                              7 of 8
+  ────────────────────────────────────────────────────────────────────────
+
+  A GitHub Actions workflow?
+
+  It runs what you run: npm install, npm test, a build per target, and
+  the documentation check if it is on.
+
+  ▸ (•) Yes                     .github/workflows/ci.yml
+    ( ) No                      nothing is written under .github
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    ⏎ choose    ← back    esc cancel

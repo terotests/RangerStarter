@@ -1,0 +1,13 @@
+  Ranger project setup                                              2 of 7
+  ────────────────────────────────────────────────────────────────────────
+
+  What are you building?
+
+  This is not the same question as where it runs. A library can have a
+  command line surface, and an application can have several.
+
+  ▸ (•) Application             a program with an entry point
+    ( ) Library                 an exported surface, and a package pe…
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    ⏎ choose    ← back    esc cancel

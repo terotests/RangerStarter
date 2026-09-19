@@ -1,0 +1,64 @@
+; SPDX-License-Identifier: MIT
+;
+; StarterDoctor -- the verdict rule, as a pure function.
+;
+; Separate from the command that prints it for two reasons:
+;
+;   * `doctor` and `doctor --json` must agree. They agree by calling this once
+;     and then either printing or serialising the answer -- not by each deciding.
+;   * IT IS TESTABLE, including the cases this machine cannot be in. An
+;     `onlyOn: darwin` check has to read "unavailable" on Linux rather than
+;     "missing", because generating an iOS surface anywhere is correct and
+;     building it there is not possible. A rule that takes the host cannot be
+;     tested for that; one that takes the platform NAME can.
+;
+; It must not import the host. The host declares the keyboard operators, and
+; pulling those into the test suite drags their per-target polyfills in with them.
+
+Import "StarterPlan.rgr"
+Import "StarterText.rgr"
+
+class StarterDoctor {
+
+    Constructor () {
+    }
+
+    ; "ok" | "missing" | "optional" | "too-old" | "unavailable"
+    ;
+    ; `version` is what the program answered, or "" when it could not be run at
+    ; all. An unparseable version is NOT too old: a check that cannot read the
+    ; number has no business failing the build over it.
+    sfn verdictOf:string (platform:string check:PlanCheck version:string) {
+        if ((strlen check.onlyOn) > 0) {
+            if (platform != check.onlyOn) {
+                return "unavailable"
+            }
+        }
+        if ((strlen version) == 0) {
+            if (check.optional) {
+                return "optional"
+            }
+            return "missing"
+        }
+        if (check.minMajor > 0) {
+            def major:int (StarterText.firstNumber(version))
+            if (major >= 0) {
+                if (major < check.minMajor) {
+                    return "too-old"
+                }
+            }
+        }
+        return "ok"
+    }
+
+    ; Whether this verdict is something somebody has to do about it.
+    sfn isActionable:boolean (verdict:string) {
+        if (verdict == "missing") {
+            return true
+        }
+        if (verdict == "too-old") {
+            return true
+        }
+        return false
+    }
+}

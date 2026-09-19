@@ -13,16 +13,19 @@ each. `AGENTS.md` in this project points here; the Ranger repository's own
 ## Compile after every few functions
 
 ```bash
-scripts/rgr check src/File.rgr      # does it compile?
-scripts/rgr run   src/Main.rgr      # compile and run
+node scripts/rgr.js check src/File.rgr      # does it compile?
+node scripts/rgr.js run   src/Main.rgr      # compile and run
 ```
 
-A failed compile prints `[FAIL]` and `Compilation FAILED`. Compilers
-**through 3.5.1 returned success** there, so never chain a run onto a build
+A failed compile prints `[FAIL]` and `Compilation FAILED`. Later compilers also
+exit non-zero, but **3.5.1 returned success** there — and which one this project
+installed is `npm install`'s answer, not yours. So never chain a run onto a build
 with `&&`: that zero satisfies the `&&`, the PREVIOUS build is still on disk,
-node runs that one, and the edit looks applied when it is not. `scripts/rgr`
-deletes the output first and reads the log as well as the exit status, so it is
-right on either compiler — use it rather than calling `rgrc` directly.
+node runs that one, and the edit looks applied when it is not.
+
+`scripts/rgr.js` deletes the output first and reads the log as well as the exit
+status, so it is right on either compiler. Use it rather than calling `rgrc`
+directly; every npm script in this project does.
 
 ## The errors that point at the wrong line
 
@@ -39,7 +42,13 @@ looks tidy and does not parse. A single statement is fine: `{ return a }`.
 
 **Arithmetic on a call result** works when the receiver is dotted:
 `(w - (Foo.bar() + 8))` parses, and so does `def v:int (this.h.value() * 5)`.
-`(obj.method()).field` still does not — bind the object, then read the field.
+`(obj.method()).field` works too, and so does a property read on a
+parenthesised receiver as an operand of an infix operator:
+`((unwrap x).v == 1)`, `(1 + (f()).v)`. The compiler binds the receiver to a
+temporary before the statement. Two shapes still need the binding written by
+hand: a method call on such a receiver inside an infix expression
+(`((unwrap x).m() + 1)`), and any such read in a `while`/`for` condition,
+which the compiler refuses with a message naming the fix.
 
 **Never start a statement with a parenthesised receiver.** Bind first:
 `def recv:T (expr)` then `recv.method()`.
@@ -53,12 +62,12 @@ name elsewhere:
 ```
 contains  startsWith  endsWith  trim  first  last
 remove    insert      write     read   normalize  toString
-has       sqrt
+has       sqrt        make      wrap
 ```
 
 Rename: `hasSub`, `beginsWith`, `finishesWith`, `trimWs`, `lowest`, `highest`,
 `removeNode`, `insertNode`, `toText`, `fromText`, `collapse`, `asString`,
-`mentions`, `squareRoot`.
+`mentions`, `squareRoot`, `newThing`, `wrapped`.
 
 The list is what has been hit, not what exists: `sqrt` and `has` were found one
 compile at a time while writing the Vega chart door and its test.
@@ -88,8 +97,9 @@ null at runtime. Treat such fields as optional when reading them.
 - No `abs` builtin — inline it.
 - Import each file by one consistent path form; mixing bare and relative imports
   of the same file has broken inherited-method resolution.
-- Prefer editing in place over rewriting a whole file: a whole-file rewrite
-  silently converts line endings and turns a 12-line change into 800.
+- If a file in your tree is **CRLF**, a script that rewrites it whole will
+  silently convert it and turn a 12-line change into 800. Check with `file`
+  before and after, or edit in place.
 
 ## What differs between targets
 
@@ -105,9 +115,16 @@ before a test passes on one and fails on another:
   the VALUE, not the string, unless the string is the point.
 
 When a program has to be right on more than one target, run it on more than
-one. `npm run targets:run` compiles to all fourteen, runs the three this
-machine has a toolchain for, and **fails when they disagree** — which is the
-only thing that actually checks the claim.
+one:
+
+```bash
+node scripts/rgr.js run src/MainTest.rgr
+node scripts/rgr.js run src/MainTest.rgr -l=python
+node scripts/rgr.js run src/MainTest.rgr -l=go
+```
+
+That takes
+seconds and is the only thing that actually checks the claim.
 
 ## Public API doc blocks
 

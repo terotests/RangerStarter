@@ -298,6 +298,50 @@ class StarterText {
         return out
     }
 
+    ; Wrap on spaces at `width`, never mid-word. A word longer than the width gets
+    ; its own line rather than being cut: a URL or a flag is worth more unbroken
+    ; than the margin is.
+    sfn wrapped:[string] (text:string width:int) {
+        def out:[string]
+        if ((strlen text) == 0) {
+            return out
+        }
+        def words:[string] (strsplit text " ")
+        def line:string ""
+        for words word:string i {
+            if ((strlen word) == 0) {
+                continue
+            }
+            if ((strlen line) == 0) {
+                line = word
+                continue
+            }
+            def candidate:string (line + " " + word)
+            if ((strlen candidate) <= width) {
+                line = candidate
+            } {
+                push out line
+                line = word
+            }
+        }
+        if ((strlen line) > 0) {
+            push out line
+        }
+        return out
+    }
+
+    ; Cut to `width`, with an ellipsis when something was lost. Used for a hint
+    ; that shares a line with a label.
+    sfn clip:string (text:string width:int) {
+        if ((strlen text) <= width) {
+            return text
+        }
+        if (width <= 1) {
+            return (substring text 0 width)
+        }
+        return ((substring text 0 (width - 1)) + "…")
+    }
+
     sfn padRight:string (text:string width:int) {
         def n:int (strlen text)
         if (n >= width) {

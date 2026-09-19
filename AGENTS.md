@@ -73,7 +73,15 @@ npm run starter:targets        # compiles the core to every target
 | --- | --- |
 | `npm run starter:build` | compile the CLI to `bin/StarterMain.js` (`npm install` does this) |
 | `npm run starter:dump` | print a plan for a configuration built in code |
+| `npm run starter:frames` | the wizard's screens, drawn from a scripted key sequence |
+| `npm run wizard:shots` | regenerate the screenshots in `docs/WIZARD.md` |
 | `node bin/ranger-starter.js help` | the commands |
+
+The questionnaire is [`docs/WIZARD.md`](docs/WIZARD.md), screen by screen. Its
+state machine (`StarterWizard`) and its renderer (`StarterWizardView`) are both
+pure — `render` answers lines, `onKey` changes state, and the host only clears
+the screen and prints. That is what makes the wizard testable from a key script
+and what makes the screenshots generated rather than captured by hand.
 
 Driving it without a questionnaire, which is what an agent should do:
 
@@ -95,10 +103,11 @@ Three things to know before changing any of it:
   markers. Applying twice changes nothing, turning a surface off removes exactly
   what it added, and a file you have edited is kept and reported rather than
   overwritten.
-- **Three operators are declared in `StarterHost.rgr`** -- a synchronous file
-  read, a file delete, and setting the exit code -- because the compiler `npm
-  install` resolves (3.5.1) has none of them. Each carries the name of the
-  built-in that replaces it. `StarterText.joinWith` is there for the same reason
+- **Six operators are declared in `StarterHost.rgr`** -- a synchronous file
+  read, a file delete, setting the exit code, the platform name, whether stdin is
+  a terminal, and giving stdin back -- because the compiler `npm install`
+  resolves (3.5.1) has none of them. Each carries the name of the built-in that
+  replaces it, where there is one. `StarterText.joinWith` is there for the same reason
   (`join` on Go was missing its import until Ranger ISSUES.md #88).
 
 ## Syntax rules that fail somewhere other than the mistake
@@ -110,7 +119,7 @@ Three things to know before changing any of it:
   tidy it looks.
 - **Reserved method names.** Defining `contains`, `startsWith`, `endsWith`,
   `trim`, `first`, `last`, `remove`, `insert`, `write`, `read`, `normalize`,
-  `toString`, `has` or `sqrt` on your own class compiles, and then every CALL
+  `toString`, `has`, `sqrt`, `make` or `wrap` on your own class compiles, and then every CALL
   SITE fails with "Class X does not have method …". Rename.
 - **Never start a statement with a parenthesised receiver.** Bind first:
   `def recv:T (expr)` then `recv.method()`.

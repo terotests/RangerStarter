@@ -29,7 +29,9 @@
     "starter:test:go": "scripts/rgr run src/starter/StarterTest.rgr -l=go",
     "starter:targets": "scripts/targets.sh src/starter/StarterTest.rgr",
     "starter:dump": "scripts/rgr run src/starter/StarterDump.rgr",
-    "prepare": "npm run starter:build"
+    "starter:frames": "scripts/rgr run src/starter/StarterWizardFrames.rgr",
+    "prepare": "npm run starter:build",
+    "wizard:shots": "scripts/wizard-shots.sh"
   },
   "devDependencies": {
     "ranger-compiler": "^3.5.1"

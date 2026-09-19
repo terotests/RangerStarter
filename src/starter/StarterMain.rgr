@@ -22,6 +22,8 @@
 
 Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
+Import "StarterWizardView.rgr"
+Import "StarterDoctor.rgr"
 Import "StarterHost.rgr"
 
 ; A tiny argv reader. `--flag`, `--key value` and `--key=value`, and one
@@ -249,6 +251,13 @@ class StarterMain {
             return 1
         }
         def cfg:StarterConfig load.config
+        return (StarterMain.applyConfig(host args cfg))
+    }
+
+    ; Generate from a configuration already in hand. `apply` reads one off disk and
+    ; the wizard hands one over; from here they are the same command, which is what
+    ; keeps the interactive path from being a second implementation.
+    sfn applyConfig:int (host:StarterHost args:StarterArgs cfg:StarterConfig) {
         def targets:StarterTargets (StarterMain.loadTargets(host))
         def assets:StarterAssets (host.loadAssets())
         def project:ProjectPlan (StarterPlanner.plan(cfg targets assets))
@@ -350,20 +359,100 @@ class StarterMain {
         if (args.has("apply")) {
             return (StarterMain.commandApply(host args))
         }
-        ; The questionnaire is milestone M7. Saying so, and saying exactly what to
-        ; do instead, is better than opening a prompt that does not work.
         def path:string (args.value("config" (StarterMain.configPath())))
-        print "ranger-starter: the interactive wizard is not built yet (PLAN_STARTER.md, M7)."
+
+        ; A questionnaire needs a terminal. Without one, raw mode cannot be set,
+        ; no key ever arrives, and a loop that looks interactive spins forever --
+        ; so the non-interactive path is named instead of entered by accident.
+        if ((host.isInteractive()) == false) {
+            print "ranger-starter: stdin is not a terminal, so there is nobody to ask."
+            print ""
+            print ("Edit `" + path + "` -- it is the source of truth, and it is the same file")
+            print "the wizard writes -- then:"
+            print ""
+            print "  ranger-starter plan            # what would change; writes nothing"
+            print "  ranger-starter apply"
+            print ""
+            print "Or write one from flags:"
+            print ""
+            print "  ranger-starter init --name my-app --surfaces cli --targets es6,go --docs"
+            return 2
+        }
+
+        def existing:StarterConfig (StarterConfig.defaults("" "application"))
+        if (host.exists(path)) {
+            def load:StarterConfigLoad (StarterConfig.load((host.readText(path))))
+            if (load.ok) {
+                existing = load.config
+            } {
+                print ("ranger-starter: `" + path + "` could not be read (" + load.problem + "), so the questions start from the defaults.")
+            }
+        }
+
+        def targets:StarterTargets (StarterMain.loadTargets(host))
+        def w:StarterWizard (StarterWizard.forConfig(existing targets))
+        def view (new StarterWizardView())
+
+        ; Two things about these three lines, both of them compiler behaviour
+        ; rather than choice. Ranger ISSUES.md #91.
+        ;
+        ; THE BLOCK IS EMPTY. On es6 the emitted handler pushes every key onto a
+        ; queue AND runs the block. Handling a key in the block and polling for it
+        ; would apply each key twice -- which for a checkbox is the same as not
+        ; toggling it at all.
+        ;
+        ; THE VARIABLE IS CALLED `key`. The handler is emitted as
+        ; `(str, key) => { ... key = __rgr_k; ... }`, so its own parameter is
+        ; named `key`: a Ranger variable of that name is shadowed and the
+        ; assignment lands on the parameter, harmlessly. Any OTHER name and the
+        ; assignment reaches the Ranger local -- which the compiler emitted as
+        ; `const`, because nothing in the SOURCE assigns it -- and the first
+        ; keypress dies with `TypeError: Assignment to constant variable`.
+        def key:string ""
+        on_keypress key {
+        }
+
+        hide_cursor
+        StarterMain.wizardLoop(w view)
+        show_cursor
+        host.releaseKeyboard()
+
+        if (w.cancelled) {
+            print ""
+            print "ranger-starter: cancelled. Nothing was written."
+            return 1
+        }
+
+        def cfg:StarterConfig (w.configOf())
+        host.writeText(path (cfg.asText()))
         print ""
-        print ("Until then, edit `" + path + "` -- it is the source of truth, and it is the")
-        print "same file the wizard will write. Then:"
+        print ("ranger-starter: wrote " + path)
         print ""
-        print "  ranger-starter plan     # what would change; writes nothing"
-        print "  ranger-starter apply    # do it"
-        print ""
-        print "`ranger-starter init --name <name> --surfaces cli --targets es6,go` writes a"
-        print "starting configuration with every surface listed and switched off."
-        return 0
+        return (StarterMain.applyConfig(host args cfg))
+    }
+
+    ; The draw-read-update loop. It redraws only after a key, so a terminal with a
+    ; slow connection is not being repainted sixty times a second for nothing.
+    sfn wizardLoop@(async):void (w:StarterWizard view:StarterWizardView) {
+        def dirty:boolean true
+        while ((w.done) == false) {
+            if (w.cancelled) {
+                return
+            }
+            if dirty {
+                clear_screen
+                for (view.render(w)) line:string i {
+                    print line
+                }
+                dirty = false
+            }
+            def key:string (poll_keypress)
+            if (key != "") {
+                w.onKey(key)
+                dirty = true
+            }
+            sleep_ms 16
+        }
     }
 
     ; What to report as this check's version: the program's own answer, or -- for a
@@ -392,32 +481,6 @@ class StarterMain {
 
     ; One check's verdict. Computed once and then either printed or serialised, so
     ; `doctor` and `doctor --json` cannot disagree.
-    ; Takes the platform NAME rather than the host, so the whole verdict rule is a
-    ; pure function of three values and the tests can cover it -- including the
-    ; cases this machine cannot be in, like an iOS check on Linux.
-    sfn checkVerdict:string (platform:string check:PlanCheck version:string) {
-        if ((strlen check.onlyOn) > 0) {
-            if (platform != check.onlyOn) {
-                return "unavailable"
-            }
-        }
-        if ((strlen version) == 0) {
-            if check.optional {
-                return "optional"
-            }
-            return "missing"
-        }
-        if (check.minMajor > 0) {
-            def major:int (StarterText.firstNumber(version))
-            if (major >= 0) {
-                if (major < check.minMajor) {
-                    return "too-old"
-                }
-            }
-        }
-        return "ok"
-    }
-
     sfn commandDoctor:int (host:StarterHost args:StarterArgs) {
         def path:string (args.value("config" (StarterMain.configPath())))
         def load:StarterConfigLoad (StarterMain.loadConfig(host path))
@@ -452,11 +515,8 @@ class StarterMain {
                 ; ONE process per check: the version text answers both "is it
                 ; there" and "which one is it".
                 def version:string (StarterMain.versionFor(host c))
-                def verdict:string (StarterMain.checkVerdict((host.platform()) c version))
-                if (verdict == "missing") {
-                    actionable = actionable + 1
-                }
-                if (verdict == "too-old") {
+                def verdict:string (StarterDoctor.verdictOf((host.platform()) c version))
+                if (StarterDoctor.isActionable(verdict)) {
                     actionable = actionable + 1
                 }
                 if wantJson {

@@ -1,0 +1,13 @@
+  Ranger project setup                                              1 of 7
+  ────────────────────────────────────────────────────────────────────────
+
+  What is the project called?
+
+  Lowercase letters, digits, `-` and `_`. It becomes the npm package
+  name, the Ranger class name and the default bundle id.
+
+    ▸ ▁
+        for example: my-app
+
+  ────────────────────────────────────────────────────────────────────────
+  type a name    ⌫ delete    ⏎ continue    esc cancel

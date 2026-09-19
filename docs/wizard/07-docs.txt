@@ -1,0 +1,14 @@
+  Ranger project setup                                              5 of 8
+  ────────────────────────────────────────────────────────────────────────
+
+  Generate API documentation?
+
+  From `doc { ... }` blocks in the source. Strict makes an undocumented
+  public declaration a build failure rather than a warning.
+
+  ▸ (•) No                      no docs scripts, and no documentation…
+    ( ) Yes                     npm run docs, and npm run docs:check
+    ( ) Yes, and enforce it     docs:check runs with -apistrict
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    ⏎ choose    ← back    esc cancel

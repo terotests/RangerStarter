@@ -1,0 +1,18 @@
+  Ranger project setup                                              3 of 7
+  ────────────────────────────────────────────────────────────────────────
+
+  Where should it run?
+
+  Pick as many as apply. These are independent of each other and of the
+  kind.
+
+  ▸ [ ] Command line            an entry point and a way to run it
+    [ ] Library                 a manifest for each ecosystem that ha…
+     –  Web                     not built yet -- Vite over a Ranger E…
+     –  Server                  not built yet -- an HTTP service (M8)
+     –  Desktop (SDL2)          not built yet -- SDL2 through C++ (M9)
+     –  Android                 not built yet -- a Kotlin module in a…
+     –  iOS                     not built yet -- a Swift module over …
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    space toggle    ⏎ continue    ← back    esc cancel

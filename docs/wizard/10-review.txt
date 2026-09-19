@@ -1,0 +1,17 @@
+  Ranger project setup                                              8 of 8
+  ────────────────────────────────────────────────────────────────────────
+
+  Ready?
+
+  This writes `ranger.project.json` and generates the project from it.
+  Nothing is overwritten that you have edited.
+
+    project        northwind
+    kind           application
+    Command line   es6, go
+    docs           yes, enforced (-apistrict)
+    agents         AGENTS.md, CLAUDE.md
+    ci             GitHub Actions
+
+  ────────────────────────────────────────────────────────────────────────
+  ⏎ generate    ← back    esc cancel

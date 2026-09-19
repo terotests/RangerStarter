@@ -20,7 +20,8 @@ Import "StarterTargets.rgr"
 Import "StarterText.rgr"
 Import "StarterPlanner.rgr"
 Import "StarterGenerator.rgr"
-Import "StarterMain.rgr"
+Import "StarterDoctor.rgr"
+Import "StarterWizardView.rgr"
 Import "StarterAssets.rgr"
 
 class StarterCheck {
@@ -720,25 +721,25 @@ class StarterTest {
     ; The doctor's verdict rule, including the cases this machine cannot be in.
     sfn testDoctorVerdicts:void (t:StarterCheck) {
         def node:PlanCheck (PlanCheck.atLeast("Ranger" "node" "node" 18 "install Node 18 or later"))
-        t.eqStr("a new enough node" (StarterMain.checkVerdict("linux" node "v22.1.0")) "ok")
-        t.eqStr("an old node is actionable" (StarterMain.checkVerdict("linux" node "v16.20.0")) "too-old")
-        t.eqStr("a missing node" (StarterMain.checkVerdict("linux" node "")) "missing")
+        t.eqStr("a new enough node" (StarterDoctor.verdictOf("linux" node "v22.1.0")) "ok")
+        t.eqStr("an old node is actionable" (StarterDoctor.verdictOf("linux" node "v16.20.0")) "too-old")
+        t.eqStr("a missing node" (StarterDoctor.verdictOf("linux" node "")) "missing")
 
         ; A version string the reader cannot parse must not be called too old.
-        t.eqStr("an unparseable version is accepted" (StarterMain.checkVerdict("linux" node "some build")) "ok")
+        t.eqStr("an unparseable version is accepted" (StarterDoctor.verdictOf("linux" node "some build")) "ok")
 
         def optionalTool:PlanCheck (PlanCheck.tool("Command line" "go toolchain" "go" "needed to build the go output"))
         optionalTool.optional = true
-        t.eqStr("a missing optional tool is not actionable" (StarterMain.checkVerdict("linux" optionalTool "")) "optional")
-        t.eqStr("and a present one is fine" (StarterMain.checkVerdict("linux" optionalTool "go version go1.24")) "ok")
+        t.eqStr("a missing optional tool is not actionable" (StarterDoctor.verdictOf("linux" optionalTool "")) "optional")
+        t.eqStr("and a present one is fine" (StarterDoctor.verdictOf("linux" optionalTool "go version go1.24")) "ok")
 
         ; The case that matters for iOS: generating on Linux is correct, building
         ; there is not possible, and that is not a missing tool.
         def macOnly:PlanCheck (PlanCheck.tool("iOS" "Xcode command line tools" "xcrun" "needs macOS"))
         macOnly.onlyOn = "darwin"
-        t.eqStr("a mac-only check on linux is unavailable" (StarterMain.checkVerdict("linux" macOnly "")) "unavailable")
-        t.eqStr("and is checked normally on a mac" (StarterMain.checkVerdict("darwin" macOnly "")) "missing")
-        t.eqStr("and passes there when present" (StarterMain.checkVerdict("darwin" macOnly "xcrun version 64")) "ok")
+        t.eqStr("a mac-only check on linux is unavailable" (StarterDoctor.verdictOf("linux" macOnly "")) "unavailable")
+        t.eqStr("and is checked normally on a mac" (StarterDoctor.verdictOf("darwin" macOnly "")) "missing")
+        t.eqStr("and passes there when present" (StarterDoctor.verdictOf("darwin" macOnly "xcrun version 64")) "ok")
     }
 
     ; The compiler is looked for as a FILE, because asking npx about it answers
@@ -765,6 +766,169 @@ class StarterTest {
         t.eqList("go is asked the way go wants" goArgs "version")
         t.eqList("and everything else the usual way" (ProfileCli.versionArgsFor("cargo")) "--version")
         t.eqList("javac takes one dash" (ProfileCli.versionArgsFor("javac")) "-version")
+    }
+
+    ; --- the wizard -----------------------------------------------------------
+    ;
+    ; The state machine is pure, so a test is a key script and an assertion about
+    ; the configuration that comes out. These are the SAME scripts the screenshots
+    ; in docs/WIZARD.md are generated from, so a picture that goes stale is a test
+    ; that fails.
+
+    sfn press:StarterWizard (w:StarterWizard script:string) {
+        def keys:[string] (strsplit script " ")
+        for keys key:string i {
+            if ((strlen key) > 0) {
+                w.onKey(key)
+            }
+        }
+        return w
+    }
+
+    sfn freshWizard:StarterWizard () {
+        def cfg:StarterConfig (StarterConfig.defaults("" "application"))
+        return (StarterWizard.forConfig(cfg (StarterTest.bundled())))
+    }
+
+    sfn testWizardWalk:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        ; name, kind, surfaces (cli), targets (es6 + go), docs (strict),
+        ; agents (both), ci (yes), review.
+        StarterTest.press(w "n o r t h w i n d return")
+        StarterTest.press(w "return")
+        StarterTest.press(w "space return")
+        StarterTest.press(w "space down space return")
+        StarterTest.press(w "down down return")
+        StarterTest.press(w "down return")
+        StarterTest.press(w "return")
+        t.isFalse("the review screen is not the end until it is confirmed" w.done)
+        StarterTest.press(w "return")
+        t.isTrue("confirming the review finishes it" w.done)
+        t.isFalse("and it was not cancelled" w.cancelled)
+
+        def cfg:StarterConfig (w.configOf())
+        t.eqStr("the name that was typed" (cfg.projectName()) "northwind")
+        t.eqStr("the kind" (cfg.projectKind()) "application")
+        t.eqList("the surfaces" (cfg.enabledSurfaceIds()) "cli")
+        t.eqList("the targets" (cfg.targetsOf("cli")) "es6,go")
+        t.isTrue("documentation" (cfg.docsEnabled()))
+        t.isTrue("enforced" (cfg.docsStrict()))
+        t.isTrue("AGENTS.md" (cfg.wantsAgentsMd()))
+        t.isTrue("and CLAUDE.md" (cfg.wantsClaudeMd()))
+        t.isTrue("and a workflow" (cfg.wantsGithubCi()))
+
+        ; The property that matters more than any of the above: what the wizard
+        ; produces is a configuration the planner accepts. A questionnaire that can
+        ; build something the generator then refuses is worse than no questionnaire.
+        def project:ProjectPlan (StarterPlanner.plan(cfg (StarterTest.bundled()) (StarterTest.assets())))
+        t.isFalse("and the planner accepts it" (project.hasErrors()))
+        t.isTrue("and plans a project from it" ((array_length project.files) > 0))
+    }
+
+    sfn testWizardRefusesABadName:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("an empty name does not advance" q.id "name")
+        t.isTrue("and says so" ((strlen q.problem) > 0))
+
+        StarterTest.press(w "N o r t h")
+        ; Key names arrive lowercase from readline, so an uppercase letter cannot
+        ; be typed -- but a digit first can, and npm rejects that.
+        def w2:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w2 "2 f a s t return")
+        def q2:WizardQuestion (w2.current())
+        t.eqStr("a name starting with a digit does not advance" q2.id "name")
+        t.isTrue("and says why" (contains q2.problem "lowercase letter"))
+
+        def w3:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w3 "a b space")
+        def q3:WizardQuestion (w3.current())
+        t.isTrue("a space in a name is refused with the fix" (contains q3.problem "cannot contain a space"))
+
+        ; And the rule is the planner's rule, so the two cannot disagree.
+        t.eqStr("the wizard and the planner share the name rule" (StarterWizard.nameProblem("northwind")) "")
+        t.isTrue("for a bad one too" ((strlen (StarterWizard.nameProblem("North Wind"))) > 0))
+    }
+
+    sfn testWizardUnavailableSurface:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        ; cursor 0 is cli, 2 is web -- which has no profile in this build.
+        StarterTest.press(w "down down space")
+        def q:WizardQuestion (w.current())
+        t.eqStr("it is still the surfaces question" q.id "surfaces")
+        t.isTrue("and it says the surface is not built yet" (contains q.problem "not built yet"))
+        t.eqInt("nothing was ticked" (q.countPicked()) 0)
+
+        ; Pressing return with nothing picked does not advance either.
+        StarterTest.press(w "return")
+        def stillSurfaces:WizardQuestion (w.current())
+        t.eqStr("and it will not continue with nothing chosen" stillSurfaces.id "surfaces")
+    }
+
+    sfn testWizardSkipsIrrelevantQuestions:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return return")
+        ; Pick library only. The command line target question must not be asked.
+        StarterTest.press(w "down space return")
+        def q:WizardQuestion (w.current())
+        t.eqStr("the library targets question is asked" q.id "targets:library")
+        StarterTest.press(w "space return")
+        def afterLibrary:WizardQuestion (w.current())
+        t.eqStr("and the cli one is skipped" afterLibrary.id "docs")
+    }
+
+    sfn testWizardBackAndCancel:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w "d e m o return")
+        def onKind:WizardQuestion (w.current())
+        t.eqStr("on the kind question" onKind.id "kind")
+        StarterTest.press(w "left")
+        def backOnName:WizardQuestion (w.current())
+        t.eqStr("back to the name" backOnName.id "name")
+        t.eqStr("with what was typed still there" backOnName.text "demo")
+        StarterTest.press(w "backspace")
+        def edited:WizardQuestion (w.current())
+        t.eqStr("backspace edits the text rather than going back" edited.text "dem")
+
+        def w2:StarterWizard (StarterTest.freshWizard())
+        StarterTest.press(w2 "escape")
+        t.isTrue("escape cancels" w2.cancelled)
+        t.isFalse("and cancelling is not finishing" w2.done)
+    }
+
+    ; The step counter changes when picking a surface adds a question, and that is
+    ; correct rather than a glitch -- but it must never run past the total.
+    sfn testWizardStepCounter:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        t.eqInt("the first step" (w.stepNumber()) 1)
+        def before:int (w.stepCount())
+        StarterTest.press(w "d e m o return return space return")
+        def after:int (w.stepCount())
+        t.isTrue("picking a surface adds its target question" (after > before))
+        t.isTrue("and the step is never past the total" ((w.stepNumber()) <= (w.stepCount())))
+    }
+
+    ; The view is a function of the state, which is what makes the screenshots
+    ; reproducible. These assert the parts a reader would notice going wrong.
+    sfn testWizardView:void (t:StarterCheck) {
+        def w:StarterWizard (StarterTest.freshWizard())
+        def view (new StarterWizardView())
+        def lines:[string] (view.render(w))
+        def text:string (StarterText.joinWith(lines "\n"))
+        t.isTrue("the header carries the step" (contains text "1 of 7"))
+        t.isTrue("the question" (contains text "What is the project called?"))
+        t.isTrue("the placeholder, marked as one" (contains text "for example: my-app"))
+        t.isTrue("and the keys that work here" (contains text "⏎ continue"))
+        t.isFalse("no back on the first screen" (contains text "← back"))
+
+        StarterTest.press(w "d e m o return return")
+        def surfaces:string (StarterText.joinWith((view.render(w)) "\n"))
+        t.isTrue("an unavailable surface is shown, not hidden" (contains surfaces "Android"))
+        t.isTrue("with the reason" (contains surfaces "not built yet"))
+        t.isTrue("an empty checkbox" (contains surfaces "[ ] Library"))
+        t.isTrue("and a cursor" (contains surfaces "▸"))
     }
 
     sfn commandOf:string (project:ProjectPlan name:string) {
@@ -860,6 +1024,13 @@ class StarterTest {
         StarterTest.testVersionReading(t)
         StarterTest.testDoctorVerdicts(t)
         StarterTest.testCompilerCheckIsAFileCheck(t)
+        StarterTest.testWizardWalk(t)
+        StarterTest.testWizardRefusesABadName(t)
+        StarterTest.testWizardUnavailableSurface(t)
+        StarterTest.testWizardSkipsIrrelevantQuestions(t)
+        StarterTest.testWizardBackAndCancel(t)
+        StarterTest.testWizardStepCounter(t)
+        StarterTest.testWizardView(t)
         t.report("the starter core")
     }
 }

@@ -1,0 +1,46 @@
+[
+  {
+    "name": "01-name-typed",
+    "keys": "n o r t h w i n d"
+  },
+  {
+    "name": "02-kind",
+    "keys": "return"
+  },
+  {
+    "name": "03-surfaces",
+    "keys": "return"
+  },
+  {
+    "name": "04-unavailable",
+    "keys": "space down down space"
+  },
+  {
+    "name": "05-targets",
+    "keys": "up up return"
+  },
+  {
+    "name": "06-targets-picked",
+    "keys": "space down space"
+  },
+  {
+    "name": "07-docs",
+    "keys": "return"
+  },
+  {
+    "name": "08-agents",
+    "keys": "down down return"
+  },
+  {
+    "name": "09-ci",
+    "keys": "down return"
+  },
+  {
+    "name": "10-review",
+    "keys": "return"
+  },
+  {
+    "name": "11-generated",
+    "keys": "return"
+  }
+]

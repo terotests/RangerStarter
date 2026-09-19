@@ -105,6 +105,39 @@ func r_starter_read(dir string, name string) string {
         }
     }
 
+    ; Is stdin a terminal?
+    ;
+    ; The wizard is a raw-mode keypress loop. With stdin redirected -- a pipe, a
+    ; CI job, `< /dev/null` -- raw mode cannot be set, no key ever arrives, and the
+    ; loop spins forever looking interactive. So it is asked first, and a
+    ; non-terminal gets told to use the flags instead.
+    starter_is_tty _:boolean () {
+        templates {
+            es6 ( "(process.stdin.isTTY === true)" )
+            python ( "sys.stdin.isatty()" (imp "sys") )
+            go ( "false" )
+            * ( "false" )
+        }
+    }
+
+    ; Give stdin back.
+    ;
+    ; `on_keypress` puts the terminal in raw mode and RESUMES stdin, which keeps
+    ; the node event loop alive: without this the wizard finishes, prints its
+    ; result, and hangs. `show_cursor` is not enough -- that is only escape codes.
+    starter_stop_keys _:void () {
+        templates {
+            es6 ( nl "if (process.stdin.isTTY) { process.stdin.setRawMode(false); }" nl
+                     "process.stdin.pause();" nl )
+            ; A no-op still has to be SYNTAX. `//` is not a Python comment, and a
+            ; `*` fallback carrying one produced a .py file that would not parse --
+            ; found by compiling this program to Python, which is exactly what
+            ; running the test on three targets is for.
+            python ( nl "pass  # no keyboard to release on this target" nl )
+            * ( nl "// no keyboard to release on this target" nl )
+        }
+    }
+
     starter_remove_file _:void (path:string name:string) {
         templates {
             es6 ('(require("fs")).rmSync(' (e 1) ' + "/" + ' (e 2) ', { force: true })')
@@ -193,6 +226,14 @@ class StarterHost {
 
     fn platform:string () {
         return (starter_platform)
+    }
+
+    fn isInteractive:boolean () {
+        return (starter_is_tty)
+    }
+
+    fn releaseKeyboard:void () {
+        starter_stop_keys
     }
 
     ; --- paths ----------------------------------------------------------------

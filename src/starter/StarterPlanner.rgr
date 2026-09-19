@@ -384,7 +384,7 @@ class StarterPlanner {
         push traps "  tidy it looks."
         push traps "- **Reserved method names.** Defining `contains`, `startsWith`, `endsWith`,"
         push traps "  `trim`, `first`, `last`, `remove`, `insert`, `write`, `read`, `normalize`,"
-        push traps "  `toString`, `has`, `make` or `sqrt` on your own class compiles, and then every"
+        push traps "  `toString`, `has`, `sqrt`, `make` or `wrap` on your own class compiles, and then every"
         push traps "  CALL SITE fails with \"Class X does not have method ...\". Rename."
         push traps "- **Never start a statement with a parenthesised receiver.** Bind first:"
         push traps "  `def recv:T (expr)` then `recv.method()`."

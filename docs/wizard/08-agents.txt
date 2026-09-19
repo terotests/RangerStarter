@@ -1,0 +1,15 @@
+  Ranger project setup                                              6 of 8
+  ────────────────────────────────────────────────────────────────────────
+
+  Instructions for coding agents?
+
+  AGENTS.md is the generic file every agent reads. CLAUDE.md stays small
+  and points at it. Both are written only between markers, so your own
+  text survives.
+
+  ▸ (•) AGENTS.md               the build commands, the syntax traps,…
+    ( ) AGENTS.md + CLAUDE.md   and the skills this project installs
+    ( ) Neither                 nothing is written for agents
+
+  ────────────────────────────────────────────────────────────────────────
+  ↑↓ move    ⏎ choose    ← back    esc cancel
