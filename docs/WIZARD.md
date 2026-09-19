@@ -244,10 +244,14 @@ npm run desktop:smoke     # 30 frames with SDL_VIDEODRIVER=dummy -- no window
   binary takes a frame count. The generated workflow runs it, and installs
   `libsdl2-dev` first. Android wants an SDK and iOS wants a Mac, so neither asks
   to be in CI.
-- **A window, not a UI toolkit.** EVG (`lib/evg`) is MIT and can be added with
-  `scripts/add-gallery.sh evg`; the rasteriser and window layer the gallery
-  applications present through are AGPL-3.0-or-later. Neither is here, and
-  neither arrives without being asked for.
+- **A window, not a UI toolkit.** Nothing is drawn but a rectangle, and no
+  drawing library is pulled in. EVG — Ranger's layout engine, `lib/evg` — is MIT
+  and can be vendored; the rasteriser and window layer the Ranger gallery
+  applications present through are AGPL-3.0-or-later, and building a product on
+  those puts the product under the AGPL. In this repository
+  `scripts/add-gallery.sh` is the only way either arrives, and it says so first;
+  a *generated* project has no such script, so see
+  [LICENSING.md](https://github.com/terotests/Ranger/blob/master/LICENSING.md).
 - **`-cpp-single-thread` is a config-file switch, not a question.**
   `surfaces.desktop.singleThread` drops the atomics from reference counting: the
   generated host starts no threads, so it is safe as generated, and a pointer
