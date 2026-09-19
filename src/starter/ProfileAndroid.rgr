@@ -8,7 +8,8 @@
 ; UI and is a seed the author owns from the moment it exists; the Ranger module
 ; owns what the app knows. Generating a whole Gradle universe from here would be
 ; generating something nobody asked for and everybody would then maintain by
-; hand.
+; hand. The wrapper is the exception: `android:build` has to run without a
+; `gradle` command on PATH, because Android Studio never installs one.
 ;
 ; THE ONE THING THAT MUST AGREE: `-ktpackage` and the host's `package`
 ; declaration. They both come from `surfaces.android.package`, because a mismatch
@@ -209,6 +210,8 @@ class ProfileAndroid extends StarterProfile {
         plan.addFile((PlanFile.generated("platforms/android/build.gradle.kts" (StarterTemplates.androidRootGradle()) id)))
         plan.addFile((PlanFile.generated("platforms/android/app/build.gradle.kts" (StarterTemplates.androidAppGradle(pkg devices className)) id)))
         plan.addFile((PlanFile.generated("platforms/android/app/src/main/AndroidManifest.xml" (StarterTemplates.androidManifest(name devices)) id)))
+        plan.addFile((PlanFile.generated("platforms/android/gradle/wrapper/gradle-wrapper.properties" (StarterTemplates.androidWrapperProperties()) id)))
+        plan.addFile((PlanFile.generated("scripts/android-gradle.js" (StarterTemplates.androidGradleJs()) id)))
 
         ; The shell and the module are seeds: the app is the author's.
         def activityPath:string ("platforms/android/app/src/main/kotlin/" + (ProfileAndroid.packagePath(pkg)) + "/MainActivity.kt")
@@ -220,6 +223,8 @@ class ProfileAndroid extends StarterProfile {
         plan.addIgnore("platforms/android/build/")
         plan.addIgnore("platforms/android/app/build/")
         plan.addIgnore("platforms/android/local.properties")
+        ; Fetched on the first build: write_file cannot emit a binary.
+        plan.addIgnore("platforms/android/gradle/wrapper/gradle-wrapper.jar")
     }
 
     sfn packagePath:string (pkg:string) {
@@ -237,8 +242,10 @@ class ProfileAndroid extends StarterProfile {
         ; fails on an unresolved reference to a file that is right there.
         def compile:string ("node scripts/rgr.js build " + entry + " -l=kotlin -d=" + (ProfileAndroid.generatedDir()) + " -- -ktpackage=" + pkg)
         plan.addScript((PlanScript.entry("android:compile" compile id)))
-        plan.addScript((PlanScript.entry("android:build" "npm run android:compile && cd platforms/android && gradle assembleDebug" id)))
-        plan.addScript((PlanScript.entry("android:install" "npm run android:compile && cd platforms/android && gradle installDebug" id)))
+        ; Not `gradle assembleDebug`. Android Studio never puts that command on
+        ; PATH; the wrapper is how an Android project is built from the CLI.
+        plan.addScript((PlanScript.entry("android:build" "npm run android:compile && node scripts/android-gradle.js assembleDebug" id)))
+        plan.addScript((PlanScript.entry("android:install" "npm run android:compile && node scripts/android-gradle.js installDebug" id)))
     }
 
     fn contributeSections:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
@@ -260,7 +267,7 @@ class ProfileAndroid extends StarterProfile {
         push l ""
         push l "```bash"
         push l "npm run android:compile   # Ranger -> Kotlin"
-        push l "npm run android:build     # and assembleDebug"
+        push l "npm run android:build     # and assembleDebug through the wrapper"
         push l "npm run android:install   # and install on a running device"
         push l "```"
         push l ""
@@ -272,6 +279,11 @@ class ProfileAndroid extends StarterProfile {
         push l "  gitignored and rewritten on every compile. Edit the Ranger source."
         push l "- **Host code is `platforms/android`**, and it is yours. The shell and the"
         push l "  manifest were written once; nothing regenerates the shell."
+        push l "- **No `gradle` command is required.** `android:build` runs"
+        push l "  `scripts/android-gradle.js`, which uses the wrapper in `platforms/android`."
+        push l "  Android Studio is enough: it never installs `gradle` on PATH. The wrapper"
+        push l "  JAR is fetched on the first build. Opening `platforms/android` in Android"
+        push l "  Studio also works, and is the smallest next step if the fetch cannot run."
         if (StarterText.includes(devices "tv")) {
             push l "- **TV:** the manifest carries `LEANBACK_LAUNCHER`. Without it the app does"
             push l "  not appear on a TV at all."
@@ -284,8 +296,7 @@ class ProfileAndroid extends StarterProfile {
     }
 
     fn contributeChecks:void (cfg:StarterConfig plan:ProjectPlan targets:StarterTargets) {
-        plan.addCheck((PlanCheck.atLeast("Android" "java" "java" 17 "Gradle and the Android plugin need JDK 17 or later.")))
-        plan.addCheck((PlanCheck.tool("Android" "gradle" "gradle" "The build runs `gradle assembleDebug` in platforms/android. A wrapper is not generated, so Gradle has to be on PATH.")))
+        plan.addCheck((PlanCheck.atLeast("Android" "java" "java" 17 "Gradle and the Android plugin need JDK 17 or later. Android Studio's bundled JDK is enough; set JAVA_HOME to it if `java` is not on PATH.")))
 
         ; The SDK is a directory named by an environment variable, not a program.
         ; `sdkmanager` and `adb` are the things that end up on PATH when it is
